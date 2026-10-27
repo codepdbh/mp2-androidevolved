@@ -2,7 +2,10 @@
   {
     "path": "external/PS2Recomp",
     "url": "https://github.com/ran-j/PS2Recomp",
-    "commit": "e5636981a1c9de368f6b71e819c3dc188dfedbf4"
+    "commit": "e5636981a1c9de368f6b71e819c3dc188dfedbf4",
+    "patches": [
+      "patches/ps2recomp-r5900-tlb-cop0-masks.patch"
+    ]
   },
   {
     "path": "external/revc-reference",

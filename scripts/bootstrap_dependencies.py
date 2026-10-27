@@ -20,6 +20,15 @@ for row in json.loads((root/'config/dependencies.lock.json').read_text()):
     actual=subprocess.check_output(['git','-C',str(path),'rev-parse','HEAD'],text=True).strip()
     if actual!=row['commit']: raise SystemExit(f'Commit mismatch: {path}; refusing to change existing checkout')
     # Test/documentation submodules are neither restored nor used in the build.
-    if subprocess.check_output(['git','-C',str(path),'status','--porcelain','--ignore-submodules=all'],text=True).strip():
+    status=lambda: subprocess.check_output(['git','-C',str(path),'status','--porcelain','--ignore-submodules=all'],text=True).strip()
+    patches=[str(root/patch) for patch in row.get('patches',[])]
+    def git_apply(*flags):
+        return subprocess.run(['git','-C',str(path),'apply','--whitespace=nowarn',*flags,*patches],capture_output=True).returncode==0
+    if not status():
+        if patches and not (a.restore and git_apply()): raise SystemExit(f'Unpatched dependency: {path}; run with --restore')
+    elif not patches or not git_apply('--reverse','--check'):
         raise SystemExit(f'Dirty dependency: {path}; refusing automatic changes')
+    touched={line.split()[-1] for line in status().splitlines()}
+    expected={line[6:].strip() for patch in patches for line in Path(patch).read_text().splitlines() if line.startswith('+++ b/')}
+    if touched!=expected: raise SystemExit(f'Unexpected changes in {path}: {sorted(touched-expected)}')
     print(row['path'],actual)

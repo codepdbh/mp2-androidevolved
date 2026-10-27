@@ -94,3 +94,12 @@ La ausencia de un hilo listo se informa como `no_runnable_threads`.
 GetOsdConfigParam4B permanece sin implementar. No se devuelve una configuración
 inventada para saltar la comprobación original de parches. Más evidencia y
 referencias ABI en [ITERATION_05.md](ITERATION_05.md).
+
+## Configuración, TLB y argumentos — iteración 6
+
+GetOsdConfigParam4B/SetOsdConfigParam4A y 6E/6F usan una preferencia de sesión de
+MP2R, no NVRAM. Los servicios TLB 55–59 y la búsqueda 5B son código original
+copiado a 0x80075000 y verificado byte a byte. TLBR/TLBWI/TLBWR/TLBP operan sobre
+`ee_tlb.h` (48 entradas, ASID/G/PageMask, Index.P); los registros TLB de COP0 se
+preservan entre hilos. SetupThread escribe argc=1 y argv[0]=BOOT2 en `_args`.
+Detalle y parche de máscaras de PS2Recomp: [ITERATION_06.md](ITERATION_06.md).

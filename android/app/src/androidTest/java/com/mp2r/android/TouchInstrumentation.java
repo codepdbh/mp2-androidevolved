@@ -26,10 +26,12 @@ public final class TouchInstrumentation extends Instrumentation {
             waitForIdleSync();
             String dataStatus=GameStorage.inspect(current);
             check(dataStatus.contains("ELF PAL verificado") && dataStatus.contains("lectura nativa OK"),"Root game-data Java/JNI read failed: "+dataStatus);
-            String init=NativeBridge.runInitialization(GameStorage.loadVerifiedExecutable());
-            check(init.startsWith("PASS:") && init.contains("semaphores=3") && init.contains("alarm_patch=1") && init.contains("pc=0x10d698") &&
+            check(GameStorage.bootPath().equals("cdrom0:\\SLES_522.56;1"),"Unexpected BOOT2 argument");
+            String init=NativeBridge.runInitialization(GameStorage.loadVerifiedExecutable(),GameStorage.bootPath());
+            check(init.startsWith("PASS:") && init.contains("semaphores=3") && init.contains("alarm_patch=1") && init.contains("pc=0x42f7e0") &&
+                init.contains("tlb_services=1") && init.contains("main_entry=1") &&
                 init.contains("threads=2") && init.contains("switches=2") && init.contains("waits=1"),"Original InitSys did not reach expected boundary: "+init);
-            check(NativeBridge.runInitialization(new byte[52]).startsWith("FAIL:"),"Truncated ELF accepted");
+            check(NativeBridge.runInitialization(new byte[52],GameStorage.bootPath()).startsWith("FAIL:"),"Truncated ELF accepted");
             runOnMainSync(()->{
                 TouchDiagnosticView v=current.controls;
                 check(GameStorage.directory().getName().equals("mp2androidevolved"),"Wrong game data folder");
@@ -64,7 +66,7 @@ public final class TouchInstrumentation extends Instrumentation {
                 event(v,MotionEvent.ACTION_UP,new int[]{9},new float[]{oldX},new float[]{oldY}); v.setEditing(false);
                 v.cancelAll();
             });
-            result.putString("result","PASS: verified PAL InitSys loads from mp2androidevolved, helper thread executes/blocks and main resumes, GetOsdConfigParam boundary, truncated ELF refused; MotionEvent multitouch/editor/aspect regression passed");
+            result.putString("result","PASS: verified PAL InitSys loads from mp2androidevolved, InitSys completes (helper thread, OSD config, TLB services) and crt0 reaches main() with BOOT2 argv, truncated ELF refused; MotionEvent multitouch/editor/aspect regression passed");
             result.putBoolean("passed",true); finish(Activity.RESULT_OK,result);
         } catch(Throwable error) {
             result.putString("result","FAIL: "+error); result.putBoolean("passed",false); finish(Activity.RESULT_CANCELED,result);

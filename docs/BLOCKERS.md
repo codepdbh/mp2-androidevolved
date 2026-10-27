@@ -1,6 +1,15 @@
 # Bloqueos y siguientes comprobaciones
 
-## Estado actual: iteración 5, 2026-10-27
+## Estado actual: iteración 6, 2026-10-27
+
+InitSys completo. La ejecución se detiene en main() 0x0042F7E0, llamada desde
+crt0 0x00100208, porque esa función aún no está seleccionada ni revisada. Las
+interrupciones están habilitadas (EIE): cualquier IRQ pendiente detiene el ensayo
+porque la entrega sigue sin implementar. Pendientes: IRQ, Sleep/Wakeup, SIF/IOP,
+GS/VU, audio. Parche local de PS2Recomp pendiente de proponer upstream.
+[Detalle de iteración6](ITERATION_06.md).
+
+## Historial: iteración 5, 2026-10-27
 
 CreateThread e inicio/espera del auxiliar superados. El principal reanuda su PC
 original tras dos cambios de contexto. Falta GetOsdConfigParam0x4B, PC0x0010D698,

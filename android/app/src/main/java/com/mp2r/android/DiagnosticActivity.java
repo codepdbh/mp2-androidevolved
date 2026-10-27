@@ -33,11 +33,11 @@ public final class DiagnosticActivity extends Activity {
         resultStatus.setText("Ejecutando inicialización original ARM64…");
         probe=new Thread(()->{
             String output;
-            try { output=NativeBridge.runInitialization(GameStorage.loadVerifiedExecutable()); }
+            try { output=NativeBridge.runInitialization(GameStorage.loadVerifiedExecutable(),GameStorage.bootPath()); }
             catch(Exception error) { output="Datos no disponibles: "+error.getMessage(); }
             try(FileOutputStream file=openFileOutput("diagnostic.log",MODE_PRIVATE)) { file.write(output.getBytes(java.nio.charset.StandardCharsets.UTF_8)); }
             catch(IOException e) { output += "\nLog: "+e.getMessage(); }
-            final String text=output.startsWith("PASS:")?"Hilo auxiliar ejecutado · Configuración de sistema pendiente":output;
+            final String text=output.startsWith("PASS:")?"InitSys completo · llegó a main() del juego":output;
             runOnUiThread(()->{ if(!isDestroyed()) resultStatus.setText(text); });
         },"MP2R-Bootstrap"); probe.start();
     }

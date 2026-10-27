@@ -23,6 +23,6 @@ if result.returncode!=0 or 'INSTRUMENTATION_RESULT: passed=true' not in result.s
     raise SystemExit('Android instrumentation failed; see private/logs/android-instrumentation.log')
 native=subprocess.check_output(base+['shell','run-as','com.mp2r.android','cat','files/diagnostic.log'],text=True,timeout=10)
 (ROOT/'private/logs/android-native-initialization.log').write_text(native,encoding='utf-8')
-if not native.startswith('PASS:') or 'pc=0x10d698' not in native or 'switches=2' not in native or 'waits=1' not in native:
+if not native.startswith('PASS:') or 'pc=0x42f7e0' not in native or 'main_entry=1' not in native or 'tlb_services=1' not in native or 'switches=2' not in native or 'waits=1' not in native:
     raise SystemExit('App diagnostic did not record the current initialization milestone')
 print('PASS: installed APK native trace confirms the original initialization milestone')

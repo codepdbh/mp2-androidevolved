@@ -13,18 +13,23 @@ static std::mutex pathMutex;
 static std::filesystem::path dataRoot;
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_mp2r_android_NativeBridge_runInitialization(JNIEnv* env,jclass,jbyteArray original) {
+Java_com_mp2r_android_NativeBridge_runInitialization(JNIEnv* env,jclass,jbyteArray original,jstring boot) {
     try {
         if(!original || env->GetArrayLength(original)!=4984624) throw std::runtime_error("Unexpected PAL ELF byte count");
+        if(!boot) throw std::runtime_error("Missing SYSTEM.CNF boot path");
         std::vector<uint8_t> elf(4984624);
         env->GetByteArrayRegion(original,0,static_cast<jsize>(elf.size()),reinterpret_cast<jbyte*>(elf.data()));
         if(env->ExceptionCheck()) return nullptr;
+        const char* text=env->GetStringUTFChars(boot,nullptr); if(!text) return nullptr;
+        std::string boot_path(text); env->ReleaseStringUTFChars(boot,text);
         std::ostringstream trace,report;
-        auto result=mp2r::runInitialization(elf.data(),elf.size(),trace);
-        bool expected=result.reason=="Unimplemented syscall 0x4b" && result.pc==0x10d698 && result.semaphores==3 && result.alarm_patch_installed &&
+        auto result=mp2r::runInitialization(elf.data(),elf.size(),trace,boot_path);
+        bool expected=result.reason=="missing_function" && result.pc==0x42f7e0 && result.source==0x100208 && result.semaphores==3 &&
+            result.alarm_patch_installed && result.tlb_services_installed && result.main_entry_verified &&
             result.threads==2 && result.context_switches==2 && result.semaphore_waits==1;
         report<<(expected?"PASS: ":"FAIL: ")<<"original InitSys pc=0x"<<std::hex<<result.pc<<" address=0x"<<result.memory_address
               <<std::dec<<" semaphores="<<result.semaphores<<" syscalls="<<result.syscalls<<" alarm_patch="<<result.alarm_patch_installed
+              <<" tlb_services="<<result.tlb_services_installed<<" main_entry="<<result.main_entry_verified
               <<" threads="<<result.threads<<" switches="<<result.context_switches<<" waits="<<result.semaphore_waits
               <<" reason="<<result.reason<<". No gameplay.\n"<<trace.str();
         return env->NewStringUTF(report.str().c_str());

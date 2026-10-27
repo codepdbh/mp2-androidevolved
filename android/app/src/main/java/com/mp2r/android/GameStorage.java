@@ -27,7 +27,17 @@ final class GameStorage {
             else activity.startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
         } else activity.requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE,Manifest.permission.WRITE_EXTERNAL_STORAGE},20);
     }
+    /** Argument the PS2 loader passes as argv[0] for a disc boot: the full SYSTEM.CNF BOOT2 value. */
+    static String bootPath() throws IOException {
+        return "cdrom0:\\"+bootEntry().group(1).trim()+";1";
+    }
     static File executableFile() throws IOException {
+        File root=directory();
+        File elf=new File(root,bootEntry().group(1).replace('\\','/').trim()).getCanonicalFile();
+        if(!elf.toPath().startsWith(root.getCanonicalFile().toPath())) throw new IOException("Ruta BOOT2 fuera de la carpeta del juego");
+        return elf;
+    }
+    private static Matcher bootEntry() throws IOException {
         File root=directory(),cnf=new File(root,"SYSTEM.CNF");
         if(!cnf.isFile()) throw new IOException("Falta SYSTEM.CNF en "+root);
         byte[] content;
@@ -41,9 +51,7 @@ final class GameStorage {
         }
         Matcher boot=Pattern.compile("BOOT2\\s*=\\s*cdrom0:\\\\([^;\\r\\n]+)",Pattern.CASE_INSENSITIVE).matcher(new String(content,StandardCharsets.US_ASCII));
         if(!boot.find()) throw new IOException("SYSTEM.CNF no contiene BOOT2");
-        File elf=new File(root,boot.group(1).replace('\\','/').trim()).getCanonicalFile();
-        if(!elf.toPath().startsWith(root.getCanonicalFile().toPath())) throw new IOException("Ruta BOOT2 fuera de la carpeta del juego");
-        return elf;
+        return boot;
     }
     static byte[] loadVerifiedExecutable() throws Exception {
         File elf=executableFile();

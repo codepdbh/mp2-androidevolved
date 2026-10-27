@@ -13,7 +13,7 @@
   <img alt="Estado" src="https://img.shields.io/badge/estado-investigaci%C3%B3n%20temprana-orange">
   <img alt="Plataforma" src="https://img.shields.io/badge/Android-ARM64%20%C2%B7%20API%2026%2B-3DDC84?logo=android&logoColor=white">
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?logo=cplusplus&logoColor=white">
-  <img alt="Iteración" src="https://img.shields.io/badge/iteraci%C3%B3n-5-blue">
+  <img alt="Iteración" src="https://img.shields.io/badge/iteraci%C3%B3n-6-blue">
   <img alt="Jugable" src="https://img.shields.io/badge/jugable-todav%C3%ADa%20no-red">
 </p>
 
@@ -21,8 +21,8 @@
 
 > [!IMPORTANT]
 > **Todavía no es jugable.** No hay menú, niveles, renderer, audio ni gameplay.
-> La APK actual es una herramienta de diagnóstico que ejecuta el arranque
-> original recompilado y prueba los controles táctiles.
+> La APK actual es una herramienta de diagnóstico: ejecuta el arranque original
+> recompilado hasta la entrada de `main()` del juego y prueba los controles táctiles.
 
 ## ¿Qué es esto?
 
@@ -49,19 +49,21 @@ Principios del proyecto:
 |---|---|
 | Identificación de la ISO y extracción (504 archivos, SHA-256) | ✅ Validada |
 | Mapa de funciones con Ghidra + EE (17 149 funciones) | ✅ Completado |
-| Recompilación del subconjunto de arranque (51 funciones, 182 PCs) | ✅ Sin instrucciones no manejadas |
+| Recompilación del subconjunto de arranque (63 funciones, 201 PCs) | ✅ Sin instrucciones no manejadas |
 | Carga del ELF real en RAM invitada desde la APK | ✅ Funciona en el dispositivo |
 | Semáforos EE, callbacks de syscall, tabla de kernel | ✅ Implementados y con tests |
 | Temporizadores, alarmas e INTC (sin entrega de IRQ) | 🟡 Parcial |
 | Hilos EE y planificador cooperativo | 🟡 Parcial: primer hilo auxiliar ejecutado |
-| `GetOsdConfigParam` (syscall `0x4B`, PC `0x0010D698`) | ⛔ **Bloqueo actual** |
+| Configuración OSD, servicios TLB y modelo TLB R5900 | ✅ Implementados y con tests |
+| InitSys original completo → `main(argc, argv)` | ✅ Trazas idénticas x64 / ARM64 |
+| Ejecución de `main()` (`0x0042F7E0`) y entrega de IRQ | ⛔ **Siguiente frontera** |
 | Servicios IOP / SIF RPC, GS / VU, audio | ⏳ Pendiente |
 | Texturas RenderWare (285 TXD decodificados con librw) | 🟡 Lectura, sin renderer |
 | HUD táctil: multitouch, editor de posiciones y pictogramas propios | ✅ Probado en el teléfono |
 | Menú, niveles, Bullet Time, Shootdodge | ⏳ Pendiente |
 
 El historial completo está en [docs/PROGRESS.md](docs/PROGRESS.md) y la última
-iteración en [docs/ITERATION_05.md](docs/ITERATION_05.md).
+iteración en [docs/ITERATION_06.md](docs/ITERATION_06.md).
 
 ## Arquitectura
 
@@ -80,6 +82,8 @@ iteración en [docs/ITERATION_05.md](docs/ITERATION_05.md).
  │   ├─ ee_semaphores.h  semáforos EE (syscall 0x40…0x44)    │
  │   ├─ ee_timer3.h      contadores y alarmas                │
  │   ├─ ee_intc.h        controlador de interrupciones       │
+ │   ├─ ee_tlb.h         TLB R5900 (48 entradas)             │
+ │   ├─ ee_osd_config.h  configuración de sistema            │
  │   └─ kernel_syscall_table.h                               │
  │  src/input/     MP2 Touch Engine (entrada semántica)      │
  └──────────────────────────────────────────────────────────┘
@@ -97,6 +101,7 @@ iteración en [docs/ITERATION_05.md](docs/ITERATION_05.md).
 | [`android/`](android) | Proyecto Gradle de la APK, puente JNI e iconos |
 | [`scripts/`](scripts) | Análisis de la ISO, Ghidra, recompilación, builds y despliegue |
 | [`config/`](config) | Configuraciones de PS2Recomp, Ghidra y dependencias fijadas |
+| [`patches/`](patches) | Correcciones auditadas aplicadas a dependencias fijadas |
 | [`tests/`](tests) | CTest (C++) y unittest (Python) |
 | [`docs/`](docs) | Informes de iteración, contratos del kernel y bloqueos |
 

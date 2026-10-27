@@ -5,6 +5,7 @@
 #include "ee_intc.h"
 #include "ee_threads.h"
 #include "ee_osd_config.h"
+#include "ee_tlb.h"
 #include "kernel_syscall_table.h"
 #include "ps2_syscalls.h"
 #include "ps2_stubs.h"
@@ -34,6 +35,39 @@ public:
     mp2r::EeThreads threads;
     mp2r::EeOsdConfig osd;
     unsigned osd_reads{},osd_writes{};
+    mp2r::EeTlb tlb;
+    unsigned tlb_writes{};
+    static mp2r::EeTlbRegisters tlbRegisters(const R5900Context* c) {
+        return {c->cop0_index,c->cop0_random,c->cop0_wired,c->cop0_pagemask,c->cop0_entryhi,c->cop0_entrylo0,c->cop0_entrylo1};
+    }
+    static void setTlbRegisters(R5900Context* c,const mp2r::EeTlbRegisters& r) {
+        c->cop0_index=r.index; c->cop0_random=r.random; c->cop0_wired=r.wired; c->cop0_pagemask=r.pagemask;
+        c->cop0_entryhi=r.entryhi; c->cop0_entrylo0=r.entrylo0; c->cop0_entrylo1=r.entrylo1;
+    }
+    void stopTlb(R5900Context* cpu) { reason="tlb_index_out_of_range"; blocked_source=cpu->pc; throw MemoryStop{}; }
+    void logTlbWrite(const mp2r::EeTlbRegisters& r,unsigned slot) {
+        if(++tlb_writes<=64) log<<"TLB write slot="<<slot<<" pagemask=0x"<<std::hex<<r.pagemask<<" entryhi=0x"<<r.entryhi
+            <<" lo0=0x"<<r.entrylo0<<" lo1=0x"<<r.entrylo1<<std::dec<<" wired="<<r.wired<<'\n';
+    }
+    void handleTLBWI(uint8_t*,R5900Context* cpu) {
+        auto r=tlbRegisters(cpu);
+        if(!tlb.writeIndexed(r)) stopTlb(cpu);
+        logTlbWrite(r,r.index&0x3f);
+    }
+    void handleTLBWR(uint8_t*,R5900Context* cpu) {
+        auto r=tlbRegisters(cpu); auto slot=r.random;
+        if(!tlb.writeRandom(r)) stopTlb(cpu);
+        if(slot<r.wired || slot>=mp2r::EeTlb::size) slot=mp2r::EeTlb::size-1;
+        setTlbRegisters(cpu,r); logTlbWrite(r,slot);
+    }
+    void handleTLBR(uint8_t*,R5900Context* cpu) {
+        auto r=tlbRegisters(cpu);
+        if(!tlb.read(r)) stopTlb(cpu);
+        setTlbRegisters(cpu,r);
+    }
+    void handleTLBP(uint8_t*,R5900Context* cpu) {
+        auto r=tlbRegisters(cpu); tlb.probe(r); setTlbRegisters(cpu,r);
+    }
     struct ThreadContext { R5900Context cpu; std::vector<SyscallFrame> syscall_frames; };
     std::unordered_map<int,ThreadContext> thread_contexts;
     unsigned context_switches{},semaphore_waits{};
@@ -44,7 +78,9 @@ public:
         cpu->llbit=0;
         thread_contexts[previous]={*cpu,std::move(syscall_frames)};
         auto& selected=thread_contexts.at(next);
+        auto global_tlb=tlbRegisters(cpu); // COP0 TLB state belongs to the CPU, not to a thread
         *cpu=selected.cpu; syscall_frames=std::move(selected.syscall_frames);
+        setTlbRegisters(cpu,global_tlb);
         cpu->llbit=0;
         ++context_switches;
         if(context_switches<=64) log<<"thread switch "<<previous<<" -> "<<next<<" pc=0x"<<std::hex<<cpu->pc<<std::dec<<'\n';
@@ -74,6 +110,27 @@ public:
             throw std::runtime_error("Original alarm kernel copy mismatch");
         if(!kernel_copy_verified) log<<"original alarm kernel and vector copies verified\n";
         kernel_copy_verified=true;
+    }
+    bool tlb_copy_verified{};
+    void verifyTlbCopy(const uint8_t* ram) {
+        // Code plus the constant service table copied by the original InitTLBFunctions path.
+        if(std::memcmp(ram+0x75000,ram+0x54c868,0x330)) throw std::runtime_error("Original TLB service copy mismatch");
+        if(!tlb_copy_verified) log<<"original TLB service copy verified\n";
+        tlb_copy_verified=true;
+    }
+    std::string boot_path;
+    // SetupThread copies LoadExecPS2 arguments into the caller's {argc, argv[16], payload[256]}.
+    // A disc boot passes the SYSTEM.CNF BOOT2 path as the only argument.
+    void writeBootArguments(uint8_t* ram) {
+        auto args=thread.args;
+        if(!args) return;
+        if((args&3) || args>PS2_RAM_SIZE-0x144 || boot_path.empty() || boot_path.size()>=256 ||
+           boot_path.find('\0')!=std::string::npos)
+            throw std::runtime_error("Unsupported boot argument area");
+        uint32_t argc=1,argv0=args+0x44;
+        std::memcpy(ram+args,&argc,4); std::memcpy(ram+args+4,&argv0,4);
+        std::memcpy(ram+argv0,boot_path.c_str(),boot_path.size()+1);
+        log<<"SetupThread args=0x"<<std::hex<<args<<std::dec<<" argc=1 argv0="<<boot_path<<'\n';
     }
     unsigned dispatches{},executions{};
     uint32_t source{};
@@ -113,7 +170,7 @@ public:
         if(number==uint32_t(-0x46)) number=0x46;
         if(number==0x3c || number==0x3d) {
             mp2r::BootstrapRuntime::handleSyscall(ram,cpu,encoded);
-            if(number==0x3c) threads.bindMain({0,0x100008,thread.stack,thread.size,thread.gp,0,0});
+            if(number==0x3c) { threads.bindMain({0,0x100008,thread.stack,thread.size,thread.gp,0,0}); writeBootArguments(ram); }
             return;
         }
         if(syscall_count<syscalls.size()) syscalls[syscall_count]=number;
@@ -280,7 +337,7 @@ uint16_t half(const uint8_t* bytes,std::size_t size,std::size_t offset) {
     return uint16_t(bytes[offset])|uint16_t(bytes[offset+1])<<8;
 }
 }
-InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std::ostream& log,
+InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std::ostream& log,std::string_view boot_path,
                                      uint32_t kernel_table_base,unsigned max_checkpoints) {
     if(bytes!=4984624 || word(elf,bytes,0)!=0x464c457fu || elf[4]!=1 || elf[5]!=1 || half(elf,bytes,18)!=8 || word(elf,bytes,24)!=0x100008)
         throw std::runtime_error("Unexpected PAL ELF layout; caller must verify SHA-256");
@@ -300,6 +357,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     R5900Context cpu{}; cpu.pc=0x100008;
     if(max_checkpoints==0) throw std::runtime_error("Zero checkpoint budget");
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); registerSelected(host);
+    host.boot_path=boot_path;
     try {
         while(!host.blocked && host.executions<200000) {
             host.clockTimers();
@@ -312,6 +370,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             }
             ++host.executions;
             if(cpu.pc>=0x80076000 && cpu.pc<0x80076740) host.verifyKernelCopy(ram.data());
+            if(cpu.pc>=0x80075000 && cpu.pc<0x80075300) host.verifyTlbCopy(ram.data());
             try { it->second(ram.data(),&cpu,&host); }
             catch(const MP2InitializationRuntime::GuestTransfer&) { continue; }
         }
@@ -350,7 +409,26 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             throw std::runtime_error("Original alarm patch installation mismatch");
         log<<"original alarm patch installation verified: 4 services, INTC12, return trampoline\n";
     }
+    bool tlb_ready=host.syscall_table.handler(0x55)==0x80075038;
+    if(tlb_ready) {
+        host.verifyTlbCopy(ram.data());
+        if(host.syscall_table.handler(0x56)!=0x800750c8 || host.syscall_table.handler(0x57)!=0x80075108 ||
+           host.syscall_table.handler(0x58)!=0x80075158 || host.syscall_table.handler(0x59)!=0x800751a8 ||
+           host.syscall_table.handler(0x5b)!=0x80075000)
+            throw std::runtime_error("Original TLB service installation mismatch");
+        log<<"original TLB service installation verified: Put/Set/Get/Probe/ExpandScratchPad and lookup\n";
+    }
+    bool main_entry=host.reason=="missing_function" && cpu.pc==0x42f7e0;
+    if(main_entry) {
+        auto* context=&cpu; auto argv=GPR_U32(context,5);
+        auto argv0=MP2InitializationRuntime::readWord(ram.data(),argv);
+        if(GPR_U32(context,4)!=1 || argv!=host.thread.args+4 || argv0>=PS2_RAM_SIZE-boot_path.size() ||
+           std::string_view(reinterpret_cast<const char*>(ram.data()+argv0),boot_path.size()+1)!=std::string(boot_path)+'\0' ||
+           !(cpu.cop0_status&0x10000))
+            throw std::runtime_error("Original main entry arguments/interrupt state mismatch");
+        log<<"original crt0 reached main(argc=1, argv[0]="<<boot_path<<") with EIE set\n";
+    }
     return {host.reason,cpu.pc,host.blocked_source,host.memory_address,host.executions,host.dispatches,host.semaphores.size(),host.syscall_count,alarm_ready,
-            host.threads.size(),host.context_switches,host.semaphore_waits};
+            host.threads.size(),host.context_switches,host.semaphore_waits,tlb_ready,main_entry};
 }
 }

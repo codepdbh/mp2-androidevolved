@@ -2,7 +2,7 @@ package com.mp2r.android;
 final class NativeBridge {
     static { System.loadLibrary("mp2r"); }
     static native String runProbe();
-    static native String runInitialization(byte[] verifiedOriginalElf);
+    static native String runInitialization(byte[] verifiedOriginalElf,String bootPath);
     static native void cancel();
     static native void configureDataDirectory(String path);
     static native String inspectExecutable(String relativePath);

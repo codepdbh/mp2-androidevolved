@@ -1,4 +1,15 @@
-# Estado actual — iteración 5, 2026-10-27
+# Estado actual — iteración 6, 2026-10-27
+
+La APK v0.5 completa InitSys original: configuración OSD, copia verificada de los
+servicios TLB y modelo TLB R5900 de 48 entradas. El crt0 llega a main() (0x0042F7E0)
+con argc=1 y argv[0] tomado de BOOT2. 63 funciones/201 PCs. Nueve CTest pasan;
+trazas x64/ARM64 idénticas. PS2Recomp parcheado para las máscaras COP0 de la TLB.
+**Todavía no es jugable.**
+
+Detalle: [ITERATION_06.md](ITERATION_06.md). Siguiente trabajo: entrar en main,
+entrega de IRQ con EIE ya habilitado, SIF/IOP RPC y GS.
+
+# Historial — iteración 5, 2026-10-27
 
 La APK v0.4 crea y ejecuta el primer hilo auxiliar original, lo bloquea en su
 semáforo y restaura el hilo principal. Dos cambios de contexto verificados en x64

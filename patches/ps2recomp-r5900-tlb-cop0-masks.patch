@@ -1,0 +1,25 @@
+diff --git a/ps2xRecomp/src/lib/cop0_translator.cpp b/ps2xRecomp/src/lib/cop0_translator.cpp
+index 1823a39..3d74d08 100644
+--- a/ps2xRecomp/src/lib/cop0_translator.cpp
++++ b/ps2xRecomp/src/lib/cop0_translator.cpp
+@@ -82,9 +82,9 @@ namespace ps2recomp
+             case COP0_REG_RANDOM:
+                 return "// MTC0 to RANDOM register ignored (read-only)";
+             case COP0_REG_ENTRYLO0:
+-                return fmt::format("ctx->cop0_entrylo0 = GPR_U32(ctx, {}) & 0x3FFFFFFF;", rt);
++                return fmt::format("ctx->cop0_entrylo0 = GPR_U32(ctx, {}) & 0x83FFFFFF;", rt);
+             case COP0_REG_ENTRYLO1:
+-                return fmt::format("ctx->cop0_entrylo1 = GPR_U32(ctx, {}) & 0x3FFFFFFF;", rt);
++                return fmt::format("ctx->cop0_entrylo1 = GPR_U32(ctx, {}) & 0x03FFFFFF;", rt);
+             case COP0_REG_CONTEXT:
+                 return fmt::format("ctx->cop0_context = (ctx->cop0_context & 0xFF800000) | (GPR_U32(ctx, {}) & 0x7FFFFF);", rt);
+             case COP0_REG_PAGEMASK:
+@@ -96,7 +96,7 @@ namespace ps2recomp
+             case COP0_REG_COUNT:
+                 return fmt::format("ctx->cop0_count = GPR_U32(ctx, {});", rt);
+             case COP0_REG_ENTRYHI:
+-                return fmt::format("ctx->cop0_entryhi = GPR_U32(ctx, {}) & 0xC00000FF;", rt);
++                return fmt::format("ctx->cop0_entryhi = GPR_U32(ctx, {}) & 0xFFFFE0FF;", rt);
+             case COP0_REG_COMPARE:
+                 return fmt::format("ctx->cop0_compare = GPR_U32(ctx, {}); ctx->cop0_cause &= ~0x8000;", rt);
+             case COP0_REG_STATUS:
