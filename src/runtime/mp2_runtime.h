@@ -149,6 +149,10 @@ public:
     }
     mp2r::EeIntc dmac_handlers;
     uint32_t dmac_stat{}; // D_STAT: channel status bits 0-9, channel mask bits 16-25
+    // SIF0/SIF1/SIF2 channel registers (0x1000C000-0x1000CFFF). Transfers themselves go through
+    // the kernel SIF syscalls; these hold what the EE library reads back (CHCR.STR etc.).
+    std::unordered_map<uint32_t,uint32_t> sif_channel_registers;
+    static bool sifChannelRegister(uint32_t address) { auto p=address&0x1fffffffu; return p>=0x1000c000u && p<0x1000d000u; }
     struct HandlerCall { uint32_t entry,a0,a1,gp; };
     struct InterruptFrame { R5900Context cpu; std::vector<SyscallFrame> syscall_frames; std::vector<HandlerCall> calls; std::size_t next{}; };
     std::optional<InterruptFrame> interrupt;
@@ -448,7 +452,10 @@ public:
             checkIop(cpu); iop.pump(ram,dmac_stat);
             SET_GPR_U32(cpu,2,id); return;
         }
-        if(number==0x78) { iop.setDChain(ram,dmac_stat); SET_GPR_U32(cpu,2,0); return; }
+        if(number==0x78) {
+            sif_channel_registers[0x1000c000u]|=0x184u; // SetDChain: SIF0 chain mode, TIE, STR
+            iop.setDChain(ram,dmac_stat); SET_GPR_U32(cpu,2,0); return;
+        }
         if(number==0x76) { SET_GPR_S32(cpu,2,-1); return; } // SifDmaStat: transfers complete synchronously
         if(number==0x16 || number==0x17) {
             auto channel=GPR_U32(cpu,4);
@@ -549,6 +556,7 @@ public:
         clockTimers();
         if(uint32_t value; special.read(address,&value,4)) return value;
         if((address&0x1fffffff)==0x1000e010) return dmac_stat;
+        if(sifChannelRegister(address)) return sif_channel_registers[address&0x1fffffffu];
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) return iop.getReg(((p-0x1000f200u)>>4)+1);
         if(gsPrivileged(address)) return uint32_t(gsRead(address&~7u)>>((address&4)*8));
         if((address&0x1fffffff)==0x1000f000) return intc.status();
@@ -562,6 +570,7 @@ public:
         clockTimers();
         if(special.write(address,&value,4)) return;
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) { iop.setReg(((p-0x1000f200u)>>4)+1,value); return; }
+        if(sifChannelRegister(address)) { sif_channel_registers[address&0x1fffffffu]=value; return; }
         if((address&0x1fffffff)==0x1000e010) { dmac_stat=(dmac_stat&~(value&0x3ffu))^(value&0x3ff0000u); return; }
         if(gsPrivileged(address) && !(address&4)) { gsWrite(address,value); return; }
         if((address&0x1fffffff)==0x1000f000) { intc.acknowledge(value); return; }

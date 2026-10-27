@@ -48,6 +48,27 @@ for table in tomllib.loads((root/'config/mp2-address-taken.toml').read_text())['
         end=min(following[0] if following else entry+0x100,entry+0x2000)
         merged[entry]={'Name':f'mp2_{entry:08X}','Start':f'0x{entry:08X}','End':f'0x{end:08X}','Size':str(end-entry)}
         added+=1
+# Uncovered code between known bodies: functions reached only through pointers (jalr,
+# vtables, callbacks). Each gap is split after every `jr $ra` + delay slot; zero padding is
+# skipped. Translating a data word is harmless: it only runs if the guest jumps to it.
+covered=sorted([(int(r['Start'],0),int(r['End'],0)) for r in merged.values()]+
+               [p for parts in ranges.values() for p in parts])
+gap_functions=0
+cursor=0x100000
+for start,end in covered+[(0x5b2c40,0x5b2c40)]:
+    if start>cursor:
+        a=cursor
+        while a<start:
+            while a<start and word(a)==0: a+=4
+            if a>=start: break
+            b=a
+            while b<start and word(b)!=0x03e00008: b+=4
+            b=min(b+8,start)
+            if a not in merged:
+                merged[a]={'Name':f'mp2_{a:08X}','Start':f'0x{a:08X}','End':f'0x{b:08X}','Size':str(b-a)}
+                gap_functions+=1
+            a=b
+    cursor=max(cursor,end)
 mapping=root/'private/ghidra/mp2-functions-merged.csv'
 with mapping.open('w',newline='') as f:
     w=csv.DictWriter(f,fieldnames=['Name','Start','End','Size']); w.writeheader()
@@ -71,5 +92,5 @@ for name in sorted(new):
 removed=[p for p in target.iterdir() if p.name not in new]
 for p in removed: p.unlink()
 shutil.rmtree(staging)
-print(f'{len(merged)} functions ({added} address-taken, {len(merged)-len(contiguous)-added} merged fragments, {len(skipped)} fragments skipped); '
+print(f'{len(merged)} functions ({gap_functions} gap, {added} address-taken, {len(merged)-len(contiguous)-added-gap_functions} merged fragments, {len(skipped)} fragments skipped); '
       f'{changed} files changed, {len(removed)} removed')
