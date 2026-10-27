@@ -1,0 +1,6 @@
+# Code reached only through pointer tables, which Ghidra's call analysis misses.
+# Each table is a zero-terminated list of function pointers in the PAL ELF.
+[[tables]]
+name = "C++ static constructors (.ctors), walked by 0x00100D70"
+start = 0x005B2C40
+end = 0x005B36FC

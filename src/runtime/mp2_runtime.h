@@ -439,6 +439,8 @@ public:
         if(number==0x71) { gs_imr=GPR_U32(cpu,4); SET_GPR_U64(cpu,2,gs_imr); return; }
         if(number==0x73) { vsync_flag=GPR_U32(cpu,4); vsync_csr=GPR_U32(cpu,5); return; }
         if(number==0x7f) { SET_GPR_U32(cpu,2,PS2_RAM_SIZE); return; }
+        // EndOfHeap: SetupHeap(base,-1) extends the heap up to the main thread's stack.
+        if(number==0x3e) { SET_GPR_U32(cpu,2,thread.stack); return; }
         if(number==0x79) { iop.setReg(GPR_U32(cpu,4),GPR_U32(cpu,5)); SET_GPR_U32(cpu,2,0); return; }
         if(number==0x7a) { SET_GPR_U32(cpu,2,iop.getReg(GPR_U32(cpu,4))); return; }
         if(number==0x77) {

@@ -33,6 +33,21 @@ for entry,parts in ranges.items():
     if low!=entry or any(s<high for s in starts[i:i+1]) or max(gaps)>64:
         skipped.append(entry); continue
     merged[entry]={'Name':f'mp2_{entry:08X}','Start':f'0x{entry:08X}','End':f'0x{high:08X}','Size':str(high-low)}
+# Address-taken entries (pointer tables) become functions ending at the next known start.
+import struct
+import tomllib
+elf=(root/'private/disc/extracted/SLES_522.56').read_bytes()
+word=lambda a: struct.unpack_from('<I',elf,a-0x100000+0x80)[0]
+added=0
+for table in tomllib.loads((root/'config/mp2-address-taken.toml').read_text())['tables']:
+    if word(table['end'])!=0: raise SystemExit(f"{table['name']}: table is not zero-terminated")
+    for slot in range(table['start'],table['end'],4):
+        entry=word(slot)
+        if entry in merged: continue
+        following=[a for a in sorted(set(merged)|set(ranges)) if a>entry]
+        end=min(following[0] if following else entry+0x100,entry+0x2000)
+        merged[entry]={'Name':f'mp2_{entry:08X}','Start':f'0x{entry:08X}','End':f'0x{end:08X}','Size':str(end-entry)}
+        added+=1
 mapping=root/'private/ghidra/mp2-functions-merged.csv'
 with mapping.open('w',newline='') as f:
     w=csv.DictWriter(f,fieldnames=['Name','Start','End','Size']); w.writeheader()
@@ -56,5 +71,5 @@ for name in sorted(new):
 removed=[p for p in target.iterdir() if p.name not in new]
 for p in removed: p.unlink()
 shutil.rmtree(staging)
-print(f'{len(merged)} functions ({len(merged)-len(contiguous)} merged fragments, {len(skipped)} fragments skipped); '
+print(f'{len(merged)} functions ({added} address-taken, {len(merged)-len(contiguous)-added} merged fragments, {len(skipped)} fragments skipped); '
       f'{changed} files changed, {len(removed)} removed')
