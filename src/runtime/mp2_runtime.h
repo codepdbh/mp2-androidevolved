@@ -13,6 +13,7 @@
 #include "ee_vblank.h"
 #include "iop_modules.h"
 #include "iop_kernel.h"
+#include "iop_libsd.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
@@ -256,7 +257,7 @@ public:
     unsigned checkpoint_limit;
     explicit MP2InitializationRuntime(std::ostream& output,uint32_t table_base,unsigned limit)
         :syscall_table(table_base),log(output),checkpoint_limit(limit) {
-        iop.log=&log; iop_kernel.log=&log;
+        iop.log=&log; iop_kernel.log=&log; libsd.install(iop_kernel);
         iop_kernel.ee_memory=[this](uint32_t address){ return guest_ram+(address&0x1ffffff); };
         auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
         iop.on_reboot=[this,loader](mp2r::IopSif& sif){ iop_kernel.reset(); mp2r::registerResidentIopServices(sif,loader); };
@@ -264,6 +265,7 @@ public:
     }
     mp2r::IopSif iop;
     mp2r::IopKernel iop_kernel{iop};
+    mp2r::IopLibsd libsd;
     std::optional<mp2r::DiscImage> disc;
     std::filesystem::path disc_root;
     // Hardware drivers MP2R provides as native libraries instead of running their IRX.

@@ -1,6 +1,7 @@
 #pragma once
 #include "iop_cpu.h"
 #include "iop_sif.h"
+#include "disc_image.h"
 #include <chrono>
 #include <deque>
 #include <map>
@@ -39,6 +40,8 @@ public:
     std::string stop_reason;
     std::map<std::pair<std::string,int>,Hle> hle;           // native libraries
     std::vector<std::string> loaded;
+    DiscImage* disc{};
+    uint64_t cd_reads{};
 
     // Sentinel return addresses inside the unused low IOP page.
     static constexpr uint32_t thread_exit=0xf00,rpc_return=0xf10,call_return=0xf20;
@@ -436,6 +439,17 @@ inline void IopKernel::installCore() {
         k.ret(0);
     });
     add("sifcmd",22,[](IopKernel& k){ k.ret(0); k.block(Wait::RpcLoop,int(k.arg(0))); k.startRpc(); });
+    // cdvdman: sector reads complete synchronously from the disc image (PS2 DVD media).
+    add("cdvdman",6,[](IopKernel& k){
+        if(!k.disc) { k.stop("iop_cd_without_disc"); return; }
+        uint32_t lbn=k.arg(0),count=k.arg(1),buf=k.arg(2);
+        for(uint32_t i=0;i<count;++i) k.disc->read(lbn+i,k.sif.ram(buf+i*2048,2048));
+        k.cd_reads+=count; k.ret(1);
+    });
+    add("cdvdman",8,[](IopKernel& k){ k.ret(0); });      // sceCdGetError: SCECdErNO
+    add("cdvdman",11,[](IopKernel& k){ k.ret(0); });     // sceCdSync: no command in progress
+    add("cdvdman",12,[](IopKernel& k){ k.ret(0x14); });  // sceCdGetDiskType: SCECdPS2DVD
+    add("cdvdman",13,[](IopKernel& k){ k.ret(2); });     // sceCdDiskReady: SCECdComplete
     (void)k;
 }
 }

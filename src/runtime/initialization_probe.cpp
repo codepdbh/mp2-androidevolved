@@ -35,7 +35,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     if(max_checkpoints==0) throw std::runtime_error("Zero checkpoint budget");
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); host.registerGuestFunctions();
     host.boot_path=boot_path; host.guest_ram=ram.data();
-    if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); }
+    if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); host.iop_kernel.disc=&*host.disc; }
     try {
         while(!host.blocked && host.executions<max_executions) {
             host.clockTimers();
