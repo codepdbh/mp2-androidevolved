@@ -12,6 +12,7 @@ public:
     struct Thread { Descriptor descriptor; State state=State::Dormant; Wait wait=Wait::None; int wait_id{}; uint64_t order{}; };
 private:
     std::array<std::optional<Thread>,256> threads_{};
+    std::array<int,256> wakeups_{};
     int current_{};
     uint64_t order_{};
 public:
@@ -58,6 +59,26 @@ public:
         }
         if(chosen) { auto& t=*threads_[chosen]; t.state=State::Ready; t.wait=Wait::None; t.wait_id=0; t.order=++order_; }
         return chosen;
+    }
+    // SleepThread consumes a pending wakeup instead of blocking. Returns true if it blocked.
+    bool sleepCurrent() {
+        if(!get(current_)) throw std::runtime_error("No current thread");
+        if(wakeups_[current_]) { --wakeups_[current_]; return false; }
+        block(Wait::Sleep,0); return true;
+    }
+    // Returns 1 when a sleeping thread became ready, 0 when the wakeup was queued, -1 on error.
+    int wakeup(int id) {
+        if(!get(id) || get(id)->state==State::Dormant) return -1;
+        auto& t=*threads_[id];
+        if(t.state==State::Waiting && t.wait==Wait::Sleep) {
+            t.state=State::Ready; t.wait=Wait::None; t.order=++order_; return 1;
+        }
+        ++wakeups_[id]; return 0;
+    }
+    int cancelWakeups(int id) {
+        if(id==0) id=current_;
+        if(!get(id)) return -1;
+        int previous=wakeups_[id]; wakeups_[id]=0; return previous;
     }
     void exitCurrent() {
         if(!get(current_)) throw std::runtime_error("No current thread");

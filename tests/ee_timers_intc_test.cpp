@@ -1,5 +1,6 @@
 #include "ee_timer3.h"
 #include "ee_intc.h"
+#include "ee_vblank.h"
 #include <iostream>
 #include <stdexcept>
 void check(bool value) { if(!value) throw std::runtime_error("EE timer/INTC contract mismatch"); }
@@ -36,5 +37,10 @@ int main() {
     intc.acknowledge(0x400); check(intc.pending()==0x800);
     intc.acknowledge(0x800); check(!intc.pending() && intc.mask()==0x800);
     intc.toggleMask(0x800); check(intc.mask()==0);
-    std::cout<<"PASS: timer reset/dividers/fraction/target/overflow/W1C/zero-return/video refusal; INTC ordering/removal/mask/acknowledgement\n";
+    mp2r::EeVblank vb;
+    check(vb.inBlank() && vb.advance(1599999)==0 && vb.advance(1)==mp2r::EeVblank::End && !vb.inBlank());
+    check(vb.advance(18400000-1)==0 && vb.advance(1)==mp2r::EeVblank::Start && vb.fields()==1 && vb.oddField());
+    check(vb.advance(40000000)==(mp2r::EeVblank::Start|mp2r::EeVblank::End) && vb.fields()==3); // two fields at once
+    intc.add(2,0x200000,-1,5,0x5c8870); check(intc.get(intc.head(2))->gp==0x5c8870);
+    std::cout<<"PASS: timer reset/dividers/fraction/target/overflow/W1C/zero-return/video refusal; INTC ordering/removal/mask/acknowledgement/gp; PAL VBLANK start/end cadence\n";
 }

@@ -19,10 +19,13 @@ def policy(path=ROOT/'config/development.toml'):
     a=cfg['analysis']
     if not 1 <= a['jobs'] <= 4 or a['memory_limit_mb'] <= 0 or a['timeout_seconds'] <= 0:
         raise ValueError('Invalid analysis limits')
+    b=cfg.get('build',a)
+    if not 1 <= b['jobs'] <= 8 or not 0 < b['memory_limit_mb'] <= 8192 or not 0 < b['timeout_seconds'] <= 14400:
+        raise ValueError('Invalid build limits')
     return cfg
 
-def run(command, log):
-    cfg=policy()['analysis']
+def run(command, log, profile='analysis'):
+    cfg=policy()[profile]
     if (ROOT/command[0]).is_file(): command[0]=str((ROOT/command[0]).resolve())
     log.parent.mkdir(parents=True,exist_ok=True)
     with log.open('wb') as out:
@@ -51,8 +54,9 @@ def run(command, log):
 if __name__=='__main__':
     p=argparse.ArgumentParser()
     p.add_argument('--log',type=Path,required=True)
+    p.add_argument('--profile',choices=['analysis','build'],default='analysis')
     p.add_argument('command',nargs=argparse.REMAINDER)
     a=p.parse_args()
     command=a.command[1:] if a.command[:1]==['--'] else a.command
     if not command: p.error('command required')
-    raise SystemExit(run(command,a.log))
+    raise SystemExit(run(command,a.log,a.profile))

@@ -14,3 +14,10 @@ prefer_headless_tests = true
 jobs = 2
 memory_limit_mb = 2048
 timeout_seconds = 300
+
+# Whole-program recompilation and compilation of ~16k translation units.
+# Only used when a caller passes --profile build explicitly.
+[build]
+jobs = 6
+memory_limit_mb = 6144
+timeout_seconds = 7200

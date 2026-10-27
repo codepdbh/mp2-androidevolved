@@ -62,20 +62,20 @@ out=root/'private/generated/initialization'
 out.mkdir(parents=True,exist_ok=True)
 lines=['// Generated glue only. Original translated function bodies are included unchanged.']
 for name in selected:
-    lines += [f'void {name}(uint8_t*,R5900Context*,MP2InitializationRuntime*);']
+    lines += [f'void {name}(uint8_t*,R5900Context*,MP2GuestRuntime*);']
 for name in selected:
     source=sources[selected[name]['address']]/f'{name}.cpp'
     lines += ['#include "'+os.path.relpath(source,out).replace('\\','/')+'"']
 missing=sorted({call for data in selected.values() for call in data['calls'] if call not in selected})
 for name in missing:
     address=int(name.rsplit('_0x',1)[1],16)
-    lines += [f'void {name}(uint8_t*,R5900Context* cpu,MP2InitializationRuntime* runtime) {{',
+    lines += [f'void {name}(uint8_t*,R5900Context* cpu,MP2GuestRuntime* runtime) {{',
               f'    runtime->stopMissing(cpu,0x{address:x}u,0u);', '}']
-lines += ['static void registerSelected(MP2InitializationRuntime& runtime) {']
+lines += ['extern const MP2GuestEntry mp2rGuestEntries[]={']
 for name,data in selected.items():
     for entry in data['entries']:
-        lines += [f'    runtime.bind(0x{entry:x}u,&{name});']
-lines += ['}']
+        lines += [f'    {{0x{entry:x}u,&{name}}},']
+lines += ['};','extern const std::size_t mp2rGuestEntryCount=sizeof(mp2rGuestEntries)/sizeof(mp2rGuestEntries[0]);']
 (out/'selected_functions.inc').write_text('\n'.join(lines)+'\n',encoding='ascii')
 (out/'selection.json').write_text(json.dumps(dict(functions=selected,guarded_missing=missing,alarm_analysis_sha256=kernel_sha256,tlb_analysis_sha256=tlb_sha256),indent=2)+'\n',encoding='utf-8')
 print(f'Prepared {len(selected)} original functions, {sum(len(v["entries"]) for v in selected.values())} exact entry/resume PCs, {len(missing)} terminal guards')

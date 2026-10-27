@@ -3,15 +3,16 @@
 #include <cstdint>
 namespace mp2r {
 // Native registration/state. Delivery is an explicit executor responsibility.
+// The same handler chains serve INTC causes and DMAC channels (AddDmacHandler).
 class EeIntc {
 public:
-    struct Handler { int cause{}; uint32_t entry{},argument{}; int next{}; };
+    struct Handler { int cause{}; uint32_t entry{},argument{}; int next{}; uint32_t gp{}; };
 private:
     std::array<Handler,65> handlers_{};
     std::array<int,15> heads_{};
     uint32_t status_{},mask_{};
 public:
-    int add(int cause,uint32_t entry,int before,uint32_t argument) {
+    int add(int cause,uint32_t entry,int before,uint32_t argument,uint32_t gp=0) {
         if(cause<0 || cause>=15 || !entry || (entry&3) || before< -1 || before>=65) return -1;
         if(before>0 && (handlers_[before].entry==0 || handlers_[before].cause!=cause)) return -1;
         int id=1; while(id<65 && handlers_[id].entry) ++id;
@@ -19,7 +20,7 @@ public:
         int* link=&heads_[cause];
         if(before==-1) { while(*link) link=&handlers_[*link].next; }
         else if(before>0) { while(*link && *link!=before) link=&handlers_[*link].next; }
-        handlers_[id]={cause,entry,argument,*link}; *link=id; return id;
+        handlers_[id]={cause,entry,argument,*link,gp}; *link=id; return id;
     }
     int remove(int cause,int id) {
         if(cause<0 || cause>=15 || id<=0 || id>=65 || !handlers_[id].entry || handlers_[id].cause!=cause) return -1;

@@ -41,5 +41,16 @@ int main() {
     check(priorities.start(b)==0 && priorities.schedule()==b);
     priorities.block(Threads::Wait::Semaphore,7); check(priorities.schedule()==1);
     check(priorities.wakeSemaphore(7,true)==b && priorities.wakeSemaphore(7,true)==a);
-    std::cout<<"PASS: thread descriptors/IDs/dormancy/priority/preemption/FIFO/semaphore handoff/exit/restart/exhausted ready queue\n";
+    {
+        Threads t; t.bindMain({0,0x100008,0x1fc0000,0x40000,0x5c8870,1,0});
+        int worker=t.create({0,0x10e2e0,0x5c1c80,0x400,0x5c8870,0,0}); check(worker>0 && t.start(worker)==0);
+        check(t.wakeup(worker)==0);                 // early wakeup is queued
+        check(t.schedule()==worker);
+        check(!t.sleepCurrent() && t.get(worker)->state==Threads::State::Running); // consumed, no block
+        check(t.sleepCurrent() && t.get(worker)->state==Threads::State::Waiting);
+        check(t.schedule()==1 && t.wakeup(worker)==1 && t.schedule()==worker);
+        check(t.wakeup(worker)==0 && t.wakeup(worker)==0 && t.cancelWakeups(worker)==2 && t.cancelWakeups(worker)==0);
+        check(t.wakeup(99)==-1);
+    }
+    std::cout<<"PASS: thread descriptors/IDs/dormancy/priority/preemption/FIFO/semaphore handoff/exit/restart/exhausted ready queue; sleep/wakeup counting\n";
 }
