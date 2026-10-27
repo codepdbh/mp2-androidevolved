@@ -19,7 +19,7 @@ for name,digest in [('alarm','66cefb213e583fbf3dbded8a2d5daa6ed4b309495bfd45c1ae
     if hashlib.sha256((root/f'private/{name}-kernel.elf').read_bytes()).hexdigest()!=digest:
         raise SystemExit(f'{name} copied-payload ELF differs from the verified PAL bytes')
 
-groups=[('private/generated/full','private/ghidra/mp2-functions-only.csv'),
+groups=[('private/generated/full','private/ghidra/mp2-functions-merged.csv'),
         ('private/generated/alarm-kernel','private/ghidra-kernel/kernel-functions.csv'),
         ('private/generated/tlb-kernel','private/ghidra-tlb-kernel/kernel-functions.csv')]
 functions={}
@@ -48,13 +48,18 @@ missing=sorted({c for d in functions.values() for c in d['calls'] if c not in fu
 
 out=root/'private/generated/full-glue'
 out.mkdir(parents=True,exist_ok=True)
-names=sorted(functions)+missing
-(out/'ps2_recompiled_functions.h').write_text('\n'.join(
-    ['#pragma once','#include <cstdint>','struct R5900Context;','class MP2GuestRuntime;']+
-    [f'void {n}(uint8_t*,R5900Context*,MP2GuestRuntime*);' for n in names])+'\n',encoding='ascii')
-(out/'ps2_recompiled_stubs.h').write_text('#pragma once\n#include "ps2_runtime.h"\n#include "ps2_syscalls.h"\n',encoding='ascii')
+def write_if_changed(path,text):
+    # Every translated body includes these headers; rewriting identical bytes would
+    # needlessly rebuild ~17k translation units.
+    if not path.exists() or path.read_text(encoding='ascii')!=text: path.write_text(text,encoding='ascii')
+declare=lambda names:['#pragma once','#include <cstdint>','struct R5900Context;','class MP2GuestRuntime;']+\
+    [f'void {n}(uint8_t*,R5900Context*,MP2GuestRuntime*);' for n in names]
+called=sorted({c for d in functions.values() for c in d['calls']})
+write_if_changed(out/'ps2_recompiled_functions.h','\n'.join(declare(called))+'\n')
+write_if_changed(out/'all_functions.h','\n'.join(declare(sorted(functions)+missing))+'\n')
+write_if_changed(out/'ps2_recompiled_stubs.h','#pragma once\n#include "ps2_runtime.h"\n#include "ps2_syscalls.h"\n')
 lines=['// Generated whole-program glue. No original instruction is translated here.',
-       '#include "ps2_recompiled_functions.h"']
+       '#include "all_functions.h"']
 for n in missing:
     address=int(n.rsplit('_0x',1)[1],16)
     lines+=[f'void {n}(uint8_t*,R5900Context* cpu,MP2GuestRuntime* runtime) {{ runtime->stopMissing(cpu,0x{address:x}u,cpu->pc); }}']

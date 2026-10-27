@@ -11,6 +11,7 @@
 #include "ee_tlb.h"
 #include "ee_special_memory.h"
 #include "ee_vblank.h"
+#include "iop_modules.h"
 #include <optional>
 #include "kernel_syscall_table.h"
 #include "ps2_syscalls.h"
@@ -249,7 +250,14 @@ public:
     std::ostream& log;
     unsigned checkpoint_limit;
     explicit MP2InitializationRuntime(std::ostream& output,uint32_t table_base,unsigned limit)
-        :syscall_table(table_base),log(output),checkpoint_limit(limit) {}
+        :syscall_table(table_base),log(output),checkpoint_limit(limit) {
+        iop.log=&log; iop.on_reboot=mp2r::registerResidentIopServices; mp2r::registerResidentIopServices(iop);
+    }
+    mp2r::IopSif iop;
+    void checkIop(R5900Context* cpu) {
+        if(iop.stop_reason.empty()) return;
+        reason=iop.stop_reason; blocked_source=cpu->pc; throw MemoryStop{};
+    }
     bool eeCheckpointDue(uint32_t=32) {
         clockTimers();
         ++checkpoints;
@@ -395,6 +403,15 @@ public:
         if(number==0x71) { gs_imr=GPR_U32(cpu,4); SET_GPR_U64(cpu,2,gs_imr); return; }
         if(number==0x73) { vsync_flag=GPR_U32(cpu,4); vsync_csr=GPR_U32(cpu,5); return; }
         if(number==0x7f) { SET_GPR_U32(cpu,2,PS2_RAM_SIZE); return; }
+        if(number==0x79) { iop.setReg(GPR_U32(cpu,4),GPR_U32(cpu,5)); SET_GPR_U32(cpu,2,0); return; }
+        if(number==0x7a) { SET_GPR_U32(cpu,2,iop.getReg(GPR_U32(cpu,4))); return; }
+        if(number==0x77) {
+            auto id=iop.setDma(ram,GPR_U32(cpu,4),GPR_U32(cpu,5));
+            checkIop(cpu); iop.pump(ram,dmac_stat);
+            SET_GPR_U32(cpu,2,id); return;
+        }
+        if(number==0x78) { iop.setDChain(ram,dmac_stat); SET_GPR_U32(cpu,2,0); return; }
+        if(number==0x76) { SET_GPR_S32(cpu,2,-1); return; } // SifDmaStat: transfers complete synchronously
         if(number==0x16 || number==0x17) {
             auto channel=GPR_U32(cpu,4);
             if(channel>=10) { SET_GPR_S32(cpu,2,-1); return; }
@@ -494,6 +511,7 @@ public:
         clockTimers();
         if(uint32_t value; special.read(address,&value,4)) return value;
         if((address&0x1fffffff)==0x1000e010) return dmac_stat;
+        if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) return iop.getReg(((p-0x1000f200u)>>4)+1);
         if(gsPrivileged(address)) return uint32_t(gsRead(address&~7u)>>((address&4)*8));
         if((address&0x1fffffff)==0x1000f000) return intc.status();
         if((address&0x1fffffff)==0x1000f010) return intc.mask();
@@ -505,6 +523,7 @@ public:
     void Store32(uint8_t*,R5900Context* cpu,uint32_t address,uint32_t value) {
         clockTimers();
         if(special.write(address,&value,4)) return;
+        if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) { iop.setReg(((p-0x1000f200u)>>4)+1,value); return; }
         if((address&0x1fffffff)==0x1000e010) { dmac_stat=(dmac_stat&~(value&0x3ffu))^(value&0x3ff0000u); return; }
         if(gsPrivileged(address) && !(address&4)) { gsWrite(address,value); return; }
         if((address&0x1fffffff)==0x1000f000) { intc.acknowledge(value); return; }
