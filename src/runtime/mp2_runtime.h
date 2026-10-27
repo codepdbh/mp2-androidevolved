@@ -545,6 +545,8 @@ public:
     void Store128(uint8_t*,R5900Context* cpu,uint32_t a,__m128i v) { storeSpecial(cpu,a&~15u,v,"unsupported_mmio_write128"); }
     // Guest faults stop precisely; MP2R has no BIOS exception vectors to deliver them to.
     void handleBreak(uint8_t*,R5900Context* cpu) { stopAccess(cpu,"guest_break",cpu->pc); }
+    void handleTrap(uint8_t*,R5900Context* cpu) { stopAccess(cpu,"guest_trap",cpu->pc); }
+    void vu0StartMicroProgram(uint8_t*,R5900Context* cpu,uint32_t address) { stopAccess(cpu,"vu0_microprogram_required",address); }
     void SignalException(R5900Context* cpu,PS2Exception exception) {
         reason="guest_exception_"+std::to_string(int(exception)); blocked_source=cpu->pc; throw MemoryStop{};
     }

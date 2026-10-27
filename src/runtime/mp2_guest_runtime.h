@@ -16,6 +16,8 @@ public:
     bool eeCheckpointDue(uint32_t cycles=32);
     void handleSyscall(uint8_t* ram,R5900Context* cpu,uint32_t encoded);
     void handleBreak(uint8_t* ram,R5900Context* cpu);
+    void handleTrap(uint8_t* ram,R5900Context* cpu);
+    void vu0StartMicroProgram(uint8_t* ram,R5900Context* cpu,uint32_t address);
     void SignalException(R5900Context* cpu,PS2Exception exception);
     void executeVU0Microprogram(uint8_t* ram,R5900Context* cpu,uint32_t address);
     void handleTLBR(uint8_t* ram,R5900Context* cpu);

@@ -23,3 +23,5 @@ void MP2GuestRuntime::Store32(uint8_t* ram,R5900Context* cpu,uint32_t address,ui
 void MP2GuestRuntime::Store64(uint8_t* ram,R5900Context* cpu,uint32_t address,uint64_t value) { return self(this)->Store64(ram,cpu,address,value); }
 void MP2GuestRuntime::Store128(uint8_t* ram,R5900Context* cpu,uint32_t address,__m128i value) { return self(this)->Store128(ram,cpu,address,value); }
 void MP2GuestRuntime::stopMissing(R5900Context* cpu,uint32_t target,uint32_t from) { return self(this)->stopMissing(cpu,target,from); }
+void MP2GuestRuntime::handleTrap(uint8_t* ram,R5900Context* cpu) { return self(this)->handleTrap(ram,cpu); }
+void MP2GuestRuntime::vu0StartMicroProgram(uint8_t* ram,R5900Context* cpu,uint32_t address) { return self(this)->vu0StartMicroProgram(ram,cpu,address); }
