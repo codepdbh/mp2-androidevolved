@@ -63,7 +63,10 @@ for start,end in covered+[(0x5b2c40,0x5b2c40)]:
             if a>=start: break
             b=a
             while b<start and word(b)!=0x03e00008: b+=4
+            closed=b<start
             b=min(b+8,start)
+            # Large region with no return, or larger than any real function (max ~20KB): data, not code.
+            if (not closed and b-a>0x2000) or b-a>0x8000: a=b; continue
             if a not in merged:
                 merged[a]={'Name':f'mp2_{a:08X}','Start':f'0x{a:08X}','End':f'0x{b:08X}','Size':str(b-a)}
                 gap_functions+=1
