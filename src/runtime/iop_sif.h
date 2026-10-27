@@ -91,6 +91,8 @@ public:
         sif0_.push_back(std::move(out));
     }
     void pumpPending(uint32_t& dmac_stat) { if(ee_) pump(ee_,dmac_stat); }
+    // EE RAM as seen by IOP-side DMA (known once the EE has issued its first SIF transfer).
+    uint8_t* eeMemory() const { if(!ee_) throw std::runtime_error("IOP access to EE RAM before any SIF transfer"); return ee_; }
 
     // ---- EE kernel SIF register syscalls (SifSetReg 0x79 / SifGetReg 0x7A)
     void setReg(uint32_t reg,uint32_t value) {

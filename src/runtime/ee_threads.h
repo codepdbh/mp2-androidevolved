@@ -9,7 +9,7 @@ public:
     enum class State { Dormant,Ready,Running,Waiting };
     enum class Wait { None,Semaphore,Sleep };
     struct Descriptor { uint32_t attributes{},entry{},stack{},size{},gp{}; int priority{}; uint32_t option{}; };
-    struct Thread { Descriptor descriptor; State state=State::Dormant; Wait wait=Wait::None; int wait_id{}; uint64_t order{}; };
+    struct Thread { Descriptor descriptor; State state=State::Dormant; Wait wait=Wait::None; int wait_id{}; uint64_t order{}; int initial_priority{}; };
 private:
     std::array<std::optional<Thread>,256> threads_{};
     std::array<int,256> wakeups_{};
@@ -20,13 +20,13 @@ public:
     int current() const { return current_; }
     void bindMain(Descriptor descriptor) {
         if(current_) throw std::runtime_error("Main thread already bound");
-        threads_[1]=Thread{descriptor,State::Running,Wait::None,0,++order_}; current_=1;
+        threads_[1]=Thread{descriptor,State::Running,Wait::None,0,++order_,descriptor.priority}; current_=1;
     }
     int create(Descriptor d) {
         if(!current_ || d.priority<0 || d.priority>=128 || d.entry<0x100000 || d.entry>=0x2000000 ||
            (d.entry&3) || d.stack<0x100000 || (d.stack&15) || d.size<16 ||
            uint64_t(d.stack)+d.size>0x2000000 || d.gp>=0x2000000 || (d.gp&3)) return -1;
-        for(int id=2;id<256;++id) if(!threads_[id]) { threads_[id]=Thread{d}; return id; }
+        for(int id=2;id<256;++id) if(!threads_[id]) { threads_[id]=Thread{d}; threads_[id]->initial_priority=d.priority; return id; }
         return -1;
     }
     int erase(int id) {
@@ -79,6 +79,12 @@ public:
         if(id==0) id=current_;
         if(!get(id)) return -1;
         int previous=wakeups_[id]; wakeups_[id]=0; return previous;
+    }
+    int wakeups(int id) const { return id>0 && id<256?wakeups_[id]:0; }
+    int semaphoreWaiters(int semaphore) const {
+        int n=0;
+        for(const auto& t:threads_) if(t && t->state==State::Waiting && t->wait==Wait::Semaphore && t->wait_id==semaphore) ++n;
+        return n;
     }
     void exitCurrent() {
         if(!get(current_)) throw std::runtime_error("No current thread");

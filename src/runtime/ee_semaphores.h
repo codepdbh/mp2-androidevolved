@@ -32,6 +32,10 @@ public:
         if(!find(id) || objects_[id-1]->count==objects_[id-1]->maximum) return -1;
         ++objects_[id-1]->count; return id;
     }
+    int erase(int id) {
+        if(!find(id)) return -1;
+        objects_[id-1].reset(); return id;
+    }
     unsigned size() const {
         unsigned result=0; for(const auto& o:objects_) if(o) ++result; return result;
     }

@@ -1,6 +1,8 @@
 #include "initialization_probe.h"
 #include "mp2_runtime.h"
 #include <thread>
+#include <cstdlib>
+#include <fstream>
 
 namespace mp2r {
 namespace {
@@ -35,7 +37,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     if(max_checkpoints==0) throw std::runtime_error("Zero checkpoint budget");
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); host.registerGuestFunctions();
     host.boot_path=boot_path; host.guest_ram=ram.data();
-    if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); host.iop_kernel.disc=&*host.disc; }
+    if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); host.iop_kernel.disc=&*host.disc; host.registerIopServices(); }
     try {
         while(!host.blocked && host.executions<max_executions) {
             host.clockTimers();
@@ -70,6 +72,12 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     } catch(const MP2InitializationRuntime::MemoryStop&) {
         // Precise stop at an unsupported hardware access; no fabricated register value.
     } catch(const std::exception& error) { host.reason=error.what(); }
+    // Diagnostics: MP2R_DUMP_RAM=<file> writes guest RAM and registers at the stop (private data).
+    if(const char* dump=std::getenv("MP2R_DUMP_RAM")) {
+        std::ofstream out(dump,std::ios::binary);
+        out.write(reinterpret_cast<const char*>(ram.data()),std::streamsize(ram.size()));
+        out.write(reinterpret_cast<const char*>(&cpu),sizeof cpu);
+    }
     log<<"stop reason="<<host.reason<<" pc=0x"<<std::hex<<cpu.pc<<" source=0x"<<host.blocked_source
        <<" address=0x"<<host.memory_address<<std::dec<<" steps="<<host.executions<<" dispatches="<<host.dispatches<<" semaphores="<<host.semaphores.size()<<'\n';
     if(host.dispatches>64) {

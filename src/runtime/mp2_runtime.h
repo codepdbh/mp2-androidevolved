@@ -14,6 +14,7 @@
 #include "iop_modules.h"
 #include "iop_kernel.h"
 #include "iop_libsd.h"
+#include "iop_cdvd.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
@@ -129,8 +130,8 @@ public:
         if(timer2.advanceBusCycles(cycles)) intc.raise(11);
         if(timer3.advanceBusCycles(cycles)) intc.raise(12);
         auto blank=vblank.advance(uint64_t(ns));
-        if(blank&mp2r::EeVblank::Start) { intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); }
-        if(blank&mp2r::EeVblank::End) intc.raise(3);
+        if(blank&mp2r::EeVblank::Start) { intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
+        if(blank&mp2r::EeVblank::End) { intc.raise(3); iop_kernel.signalVblank(false); }
     }
     // ---- Interrupt delivery (INT0 = INTC, INT1 = DMAC), modelled on the EE kernel dispatcher:
     // causes are acknowledged first, then each registered handler runs with a0=cause/channel,
@@ -264,8 +265,26 @@ public:
         iop.log=&log; iop_kernel.log=&log; libsd.install(iop_kernel);
         iop_kernel.ee_memory=[this](uint32_t address){ return guest_ram+(address&0x1ffffff); };
         auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
-        iop.on_reboot=[this,loader](mp2r::IopSif& sif){ iop_kernel.reset(); mp2r::registerResidentIopServices(sif,loader); };
-        mp2r::registerResidentIopServices(iop,loader);
+        iop.on_reboot=[this](mp2r::IopSif&){ iop_kernel.reset(); registerIopServices(); };
+        registerIopServices();
+    }
+    // Resident IOP services (LOADFILE, IOP heap, cdvdfsv); repeated after reboots and disc attach.
+    void registerIopServices() {
+        auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
+        auto files=[this](const std::string& path){ return readDiscFile(path); };
+        mp2r::registerResidentIopServices(iop,loader,files);
+        mp2r::registerCdvdServices(iop,disc?&*disc:nullptr);
+    }
+    // "cdrom0:\DIR\FILE;1" -> bytes of <disc root>/DIR/FILE (only the cdrom0: device exists).
+    std::optional<std::vector<uint8_t>> readDiscFile(const std::string& path) {
+        if(disc_root.empty() || path.rfind("cdrom0:",0)!=0) return std::nullopt;
+        auto relative=path.substr(7);
+        if(auto semi=relative.find(';');semi!=std::string::npos) relative.resize(semi);
+        std::replace(relative.begin(),relative.end(),'\\','/');
+        while(!relative.empty() && relative.front()=='/') relative.erase(0,1);
+        std::ifstream file(disc_root/relative,std::ios::binary);
+        if(!file) return std::nullopt;
+        return std::vector<uint8_t>((std::istreambuf_iterator<char>(file)),{});
     }
     mp2r::IopSif iop;
     mp2r::IopKernel iop_kernel{iop};
@@ -277,15 +296,9 @@ public:
     int loadIopModule(const std::string& path,const std::string& name,const std::string& args) {
         if(nativeIopModule(name)) return int(iop.modules.size()+1);
         if(disc_root.empty()) { iop.stop_reason="iop_module_without_disc "+name; return -1; }
-        // "cdrom0:\DIR\FILE;1" -> <disc root>/DIR/FILE
-        auto relative=path.substr(path.find(':')+1);
-        if(auto semi=relative.find(';');semi!=std::string::npos) relative.resize(semi);
-        std::replace(relative.begin(),relative.end(),'\\','/');
-        while(!relative.empty() && relative.front()=='/') relative.erase(0,1);
-        std::ifstream file(disc_root/relative,std::ios::binary);
-        if(!file) { log<<"IOP module not found on disc: "<<path<<'\n'; return -203; }      // KE_NOFILE
-        std::vector<uint8_t> irx((std::istreambuf_iterator<char>(file)),{});
-        if(!iop_kernel.loadModule(irx,name,args)) { iop.stop_reason=iop_kernel.stop_reason.empty()?"iop_module_no_resident "+name:iop_kernel.stop_reason; return -1; }
+        auto irx=readDiscFile(path);
+        if(!irx) { log<<"IOP module not found on disc: "<<path<<'\n'; return -203; }      // KE_NOFILE
+        if(!iop_kernel.loadModule(*irx,name,args)) { iop.stop_reason=iop_kernel.stop_reason.empty()?"iop_module_no_resident "+name:iop_kernel.stop_reason; return -1; }
         return int(iop.modules.size()+1);
     }
     // Lets IOP threads run; replies they queue for the EE are pumped through SIF0.
@@ -422,6 +435,32 @@ public:
             SET_GPR_S32(cpu,2,chains.remove(GPR_S32(cpu,4),GPR_S32(cpu,5))<0?-1:0);
             return;
         }
+        if(number==0x41) {
+            int id=GPR_S32(cpu,4);
+            if(threads.semaphoreWaiters(id)) { reason="delete_semaphore_with_waiters"; blocked_source=cpu->pc; throw MemoryStop{}; }
+            SET_GPR_S32(cpu,2,semaphores.erase(id)); return;
+        }
+        if(number==0x47 || number==0x48) { // ReferSemaStatus: {count, max, init, waiters, attr, option}
+            int id=GPR_S32(cpu,4); auto p=GPR_U32(cpu,5); const auto* s=semaphores.find(id);
+            if(!s || p>PS2_RAM_SIZE-24) { SET_GPR_S32(cpu,2,-1); return; }
+            uint32_t v[6]={uint32_t(s->count),uint32_t(s->maximum),uint32_t(s->initial),uint32_t(threads.semaphoreWaiters(id)),s->attributes,s->option};
+            std::memcpy(ram+p,v,sizeof v); SET_GPR_S32(cpu,2,id); return;
+        }
+        if(number==0x30 || number==0x31) { // ReferThreadStatus -> ee_thread_status_t, returns THS_* status
+            int id=GPR_S32(cpu,4); if(!id) id=threads.current();
+            const auto* t=threads.get(id); auto p=GPR_U32(cpu,5);
+            if(!t) { SET_GPR_S32(cpu,2,-1); return; }
+            using S=mp2r::EeThreads::State; using W=mp2r::EeThreads::Wait;
+            uint32_t status=id==threads.current() && !idle?1u:t->state==S::Ready?2u:t->state==S::Waiting?4u:t->state==S::Running?2u:0x10u;
+            if(p) {
+                if(p>PS2_RAM_SIZE-48) { SET_GPR_S32(cpu,2,-1); return; }
+                const auto& d=t->descriptor;
+                uint32_t v[12]={status,d.entry,d.stack,d.size,d.gp,uint32_t(t->initial_priority),uint32_t(d.priority),d.attributes,d.option,
+                                t->wait==W::Sleep?1u:t->wait==W::Semaphore?2u:0u,uint32_t(t->wait_id),uint32_t(threads.wakeups(id))};
+                std::memcpy(ram+p,v,sizeof v);
+            }
+            SET_GPR_U32(cpu,2,status); return;
+        }
         if(number==0x32) {
             SET_GPR_S32(cpu,2,threads.current());
             if(threads.sleepCurrent()) reschedule(cpu);
@@ -457,6 +496,9 @@ public:
             iop.setDChain(ram,dmac_stat); SET_GPR_U32(cpu,2,0); return;
         }
         if(number==0x76) { SET_GPR_S32(cpu,2,-1); return; } // SifDmaStat: transfers complete synchronously
+        // Deci2Call: retail consoles have no DECI2 debugger host, so every request is refused.
+        if(number==0x7c) { log<<"Deci2Call func="<<GPR_U32(cpu,4)<<" refused (no DECI2 host)\n"; SET_GPR_S32(cpu,2,-1); return; }
+        if(number==0x6b) { sif_channel_registers[0x1000c000u]&=~0x100u; return; } // sceSifStopDma: SIF0 CHCR.STR off
         if(number==0x16 || number==0x17) {
             auto channel=GPR_U32(cpu,4);
             if(channel>=10) { SET_GPR_S32(cpu,2,-1); return; }

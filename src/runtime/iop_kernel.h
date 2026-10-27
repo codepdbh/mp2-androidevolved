@@ -20,7 +20,7 @@ class IopKernel {
 public:
     using Hle=std::function<void(IopKernel&)>;
     enum class State { Dormant,Ready,Waiting };
-    enum class Wait { None,Sema,Event,Sleep,Delay,RpcLoop };
+    enum class Wait { None,Sema,Event,Sleep,Delay,RpcLoop,Vblank };
     struct Thread {
         int id{}; uint32_t attr{},entry{},stack{},stack_size{},gp{},option{}; int priority{},initial_priority{};
         State state=State::Dormant; Wait wait=Wait::None; int wait_id{}; uint64_t order{};
@@ -42,6 +42,8 @@ public:
     std::vector<std::string> loaded;
     DiscImage* disc{};
     uint64_t cd_reads{};
+    int cd_stream_flag{},cd_intr_event{};
+    std::map<std::string,uint32_t> devices;           // ioman device name -> iop_device_t
 
     // Sentinel return addresses inside the unused low IOP page.
     static constexpr uint32_t thread_exit=0xf00,rpc_return=0xf10,call_return=0xf20;
@@ -150,10 +152,17 @@ public:
             --budget;
         }
     }
+    // Video timing shared with the EE: wakes threads in WaitVblankStart (id 0) / WaitVblankEnd (id 1).
+    void signalVblank(bool start) {
+        for(auto& [id,t]:threads_)
+            if(t.state==State::Waiting && t.wait==Wait::Vblank && t.wait_id==(start?0:1)) ready(t,0);
+        in_vblank=start;
+    }
+    bool in_vblank{};
     // IOP reboot: every module, thread and kernel object disappears.
     void reset() {
         stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
-        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear();
+        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); cd_intr_event=0;
         active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; loaded.clear();
         sif.user_command=nullptr;
     }
@@ -439,6 +448,19 @@ inline void IopKernel::installCore() {
         k.ret(0);
     });
     add("sifcmd",22,[](IopKernel& k){ k.ret(0); k.block(Wait::RpcLoop,int(k.arg(0))); k.startRpc(); });
+    // ioman AddDrv(20)/DelDrv(21): device drivers registered by modules (iop_device_t {name, type, version, desc, ops}).
+    add("ioman",20,[](IopKernel& k){
+        uint32_t device=k.arg(0); auto name=k.sif.readString(k.read(device,4),32);
+        k.devices[name]=device;
+        if(k.log) *k.log<<"IOP AddDrv "<<name<<" ops=0x"<<std::hex<<k.read(device+16,4)<<std::dec<<'\n';
+        k.ret(0);
+    });
+    add("ioman",21,[](IopKernel& k){ k.ret(k.devices.erase(k.sif.readString(k.arg(0),32))?0:uint32_t(-1)); });
+    // vblank: WaitVblankStart(4), WaitVblankEnd(5), WaitVblank(6: in blank or next start), WaitNonVblank(7).
+    add("vblank",4,[](IopKernel& k){ k.ret(0); k.block(Wait::Vblank,0); });
+    add("vblank",5,[](IopKernel& k){ k.ret(0); k.block(Wait::Vblank,1); });
+    add("vblank",6,[](IopKernel& k){ k.ret(0); if(!k.in_vblank) k.block(Wait::Vblank,0); });
+    add("vblank",7,[](IopKernel& k){ k.ret(0); if(k.in_vblank) k.block(Wait::Vblank,1); });
     // cdvdman: sector reads complete synchronously from the disc image (PS2 DVD media).
     add("cdvdman",6,[](IopKernel& k){
         if(!k.disc) { k.stop("iop_cd_without_disc"); return; }
@@ -450,6 +472,22 @@ inline void IopKernel::installCore() {
     add("cdvdman",11,[](IopKernel& k){ k.ret(0); });     // sceCdSync: no command in progress
     add("cdvdman",12,[](IopKernel& k){ k.ret(0x14); });  // sceCdGetDiskType: SCECdPS2DVD
     add("cdvdman",13,[](IopKernel& k){ k.ret(2); });     // sceCdDiskReady: SCECdComplete
+    add("cdvdman",50,[](IopKernel& k){                    // sceCdSC (system control), cdvdman 2.35 semantics
+        int32_t code=int32_t(k.arg(0)); uint32_t param=k.arg(1);
+        if(code>=-1 && code<=2) {                          // stream flag; *param = last error
+            if(param) k.write(param,0,4);
+            if(code!=-1) k.cd_stream_flag=code;
+            k.ret(uint32_t(k.cd_stream_flag)); return;
+        }
+        if(code==-9) { k.ret(0x0223); return; }           // 0xFFFFFFF7: cdvdman version
+        if(code==-11) {                                    // 0xFFFFFFF5: cdvdman interrupt event flag
+            // cdvdman leaves it at 0x29 once idle; MP2R reads complete synchronously, so it stays idle.
+            if(!k.cd_intr_event) { k.cd_intr_event=k.next_id_++; k.events_[k.cd_intr_event]={0x29,2,0}; }
+            k.ret(uint32_t(k.cd_intr_event)); return;
+        }
+        if(code==-8) { k.ret(1); return; }                // 0xFFFFFFF8: spin control
+        k.stop("iop_cdsc_unsupported "+std::to_string(code));
+    });
     (void)k;
 }
 }
