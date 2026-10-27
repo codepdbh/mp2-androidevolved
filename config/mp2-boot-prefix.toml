@@ -1,0 +1,13 @@
+# Intentional original code prefix, not a complete function or game boot.
+[general]
+input = "private/disc/extracted/SLES_522.56"
+output = "private/generated/boot-prefix/"
+ghidra_output = "private/boot-prefix.csv"
+single_file_output = false
+low_memory_mode = true
+output_worker_threads = 1
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+stubs = []
+skip = []

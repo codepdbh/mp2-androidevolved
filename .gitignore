@@ -1,0 +1,15 @@
+*.iso
+*.bin
+*.img
+/private/
+/external/
+/.venv/
+/build/
+__pycache__/
+*.pyc
+/android/.gradle/
+/android/.cxx/
+/android/app/.cxx/
+/android/app/build/
+/android/build/
+/android/local.properties

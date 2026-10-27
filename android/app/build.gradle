@@ -1,0 +1,19 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'com.mp2r.android'
+    compileSdk 35
+    ndkVersion '28.2.13676358'
+    defaultConfig {
+        applicationId 'com.mp2r.android'
+        minSdk 26
+        targetSdk 35
+        versionCode 4
+        versionName '0.4-thread-diagnostic'
+        testInstrumentationRunner 'com.mp2r.android.TouchInstrumentation'
+        ndk { abiFilters 'arm64-v8a' }
+        externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static'; cppFlags '-std=c++20' } }
+    }
+    externalNativeBuild { cmake { path file('CMakeLists.txt'); version '3.22.1' } }
+    buildTypes { debug { debuggable true } }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_11; targetCompatibility JavaVersion.VERSION_11 }
+}

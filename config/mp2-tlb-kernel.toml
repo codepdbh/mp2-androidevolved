@@ -1,0 +1,12 @@
+[general]
+input = "private/tlb-kernel.elf"
+output = "private/generated/tlb-kernel/"
+ghidra_output = "private/ghidra-tlb-kernel/kernel-functions.csv"
+single_file_output = false
+low_memory_mode = true
+output_worker_threads = 1
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+stubs = []
+skip = []

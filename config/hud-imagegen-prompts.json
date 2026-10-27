@@ -1,0 +1,67 @@
+{
+  "tool": "built-in image_gen.imagegen",
+  "transparent_background": true,
+  "style": "Original monochrome noir HUD pictograms, inspired by the mobile control philosophy; no commercial APK assets copied.",
+  "icons": [
+    {
+      "name": "shootdodge",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-b68bf8a2-216f-45e1-8ee3-f1c1ac14a9b7.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_shootdodge.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: A complete anonymous adult noir action hero in an airborne sideways diving pose, trench coat tails trailing, one arm extended forward holding a small pistol, knees bent. Very clear bold human silhouette, side view, horizontally composed body within square canvas. This glyph means SHOOTDODGE, not jumping. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "bullet_time",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-388d9047-047d-40bf-814e-0118549c7394.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_bullet_time.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: A compact unmistakable hourglass silhouette with one large bullet crossing diagonally behind the hourglass. A simple bold time-slowing pictogram. No clock numbers. This glyph means BULLET TIME. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "reload",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-3c7777f2-f86f-4b33-a70a-99619fd9809b.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_reload.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: A short pistol ammunition magazine with exactly two broad curved arrows circling it, clear reload cycle. Bold simple silhouette. This glyph means RELOAD. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "jump",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-87d6f82d-2ca9-4efd-a02e-f4e22f716e57.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_jump.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: An anonymous full-body adult human action figure springing upward, one knee raised, other leg extending down, clearly JUMPING vertically. Compact iconic silhouette and no weapon. This means JUMP. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "interact",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-ba6ba013-0dbf-483e-b419-a8fa5a5cf7c9.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_interact.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: A bold open hand reaching forward, palm slightly angled, clearly a simple interaction/use gesture. No extra object. This means INTERACT. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "aim",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-758f07d1-b60a-4d86-9b3e-b498215d02b7.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_aim.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: A clean compact crosshair/reticle: four thick separated cardinal strokes surrounding a small hollow center circle. Simple bold aiming sight, not a complex scope scene. This means AIM. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "weapons",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-34d82394-7c90-4eb0-848d-76679463af02.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_weapons.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: Two compact different handgun silhouettes overlapping diagonally, with a single short curved switching arrow above them. Readable weapon switch pictogram, no bullets in flight. This means CHANGE WEAPON. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "painkiller",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-d47d3064-095a-4137-a09c-446c1f297935.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_painkiller.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: A small squat medicine bottle silhouette with a plain cross-shaped cutout on its front, one capsule beside it. Strong simple silhouette, no text or label. This means USE PAINKILLER. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "pause",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-2870c61a-fb3b-437e-a198-43c56d1d194d.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_pause.png",
+      "prompt": "Use case: stylized-concept. Asset type: ONE individual transparent mobile shooter HUD pictogram. The attached pistol icon is a STYLE REFERENCE ONLY; create a completely new subject: Two broad vertical parallel rounded bars, subtly beveled by flat cutout highlights, compact and unmistakable PAUSE symbol. Absolutely no enclosing circle. This means PAUSE. Match the reference's warm-white solid graphic shapes, thin charcoal keyline and sparse cutout details. Original noir game touch-control icon, stylistically compatible with Max Payne Mobile controls but not a copy of a commercial asset. Readable at 36 pixels. Flat graphic silhouette, centered complete subject, even 16 percent transparent padding. One icon only, no surrounding circle, no button disc, no background, no scene, no text, letters, numbers, watermark or logos. True transparent alpha outside the icon."
+    },
+    {
+      "name": "fire",
+      "source": "C:\\Users\\Sistemas\\.codex\\generated_images\\01a17991-aa61-7a80-a8e9-e0e45bccb318\\exec-4b52711f-6530-4c87-b0e9-1faac4bfaf84.png",
+      "asset": "android/app/src/main/res/drawable-nodpi/hud_fire.png",
+      "prompt": "Use case: stylized-concept. Asset type: one production mobile action-game HUD icon, transparent PNG. Create an ORIGINAL noir shooter FIRE button pictogram, inspired by the legibility and understated monochrome touch-control silhouettes of early Max Payne Mobile, but do not reproduce a commercial asset. Subject: bold side silhouette of a semi-automatic pistol angled up-right, index-finger/trigger motif optional, compact recognizable gun shape. Pure warm-white / very pale gray solid shapes, sparse cut-out details, crisp antialiased edges with a thin charcoal keyline, readable at 36 pixels. Center the complete icon on a square transparent canvas with even 18 percent padding. Flat graphic screenprint silhouette, no photorealism, no texture outside the icon, no 3D. Absolutely no text, letters, numbers, logos, watermark, outer circle, button disc, frame or background. Preserve real transparent alpha; the background is empty transparent. This is a functional HUD glyph, not a picture of a physical button."
+    }
+  ]
+}

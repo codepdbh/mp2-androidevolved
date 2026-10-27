@@ -1,0 +1,12 @@
+[general]
+input = "private/alarm-kernel.elf"
+output = "private/generated/alarm-kernel/"
+ghidra_output = "private/ghidra-kernel/kernel-functions.csv"
+single_file_output = false
+low_memory_mode = true
+output_worker_threads = 1
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+stubs = []
+skip = []

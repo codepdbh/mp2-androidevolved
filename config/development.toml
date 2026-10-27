@@ -1,0 +1,16 @@
+[desktop]
+windowed_only = true
+fullscreen_allowed = false
+maximize_on_start = false
+always_on_top = false
+width = 960
+height = 540
+vsync = true
+fps_limit = 45
+capture_mouse_on_start = false
+prefer_headless_tests = true
+
+[analysis]
+jobs = 2
+memory_limit_mb = 2048
+timeout_seconds = 300

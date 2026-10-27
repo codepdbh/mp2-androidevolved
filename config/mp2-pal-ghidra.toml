@@ -1,0 +1,14 @@
+# Functions with one contiguous Ghidra body only. Fragments and synthetic labels
+# are recorded separately for review; this is deliberately not full game coverage.
+[general]
+input = "private/disc/extracted/SLES_522.56"
+output = "private/generated/ghidra/"
+ghidra_output = "private/ghidra/mp2-functions-only.csv"
+single_file_output = false
+low_memory_mode = true
+output_worker_threads = 1
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+stubs = []
+skip = []
