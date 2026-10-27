@@ -23,13 +23,19 @@ public:
     static constexpr uint32_t SIFINIT=0x10000,CMDINIT=0x20000,BOOTEND=0x40000;
     // Returns the IOP address of the reply data (copied to the EE receive buffer), or 0.
     using Handler=std::function<uint32_t(IopSif&,int function,uint32_t buffer,uint32_t size)>;
-    struct Server { uint32_t sid,token,buffer,size; Handler handler; std::string module; };
+    // Servers implemented by IOP module code reply later through completeCall(ticket, reply).
+    using AsyncHandler=std::function<void(uint32_t function,uint32_t buffer,uint32_t size,uint64_t ticket)>;
+    struct Server { uint32_t sid,token,buffer,size; Handler handler; std::string module; AsyncHandler async; };
 private:
+    struct CallState { uint32_t rec,pkt,rpc,cd,recvbuf,rsize,rmode; };
+    std::map<uint64_t,CallState> pending_calls_;
+    uint64_t next_ticket_=1;
+    uint8_t* ee_{};
     std::vector<uint8_t> ram_=std::vector<uint8_t>(ram_size);
     uint32_t mscom_{},smcom_{},msflag_{},smflag_{};
     std::array<uint32_t,64> system_regs_{};
     uint32_t ee_packet_buffer_{};
-    uint32_t heap_=0x00100000;
+    uint32_t heap_=0x00020000;
     std::map<uint32_t,Server> servers_;
     struct Outgoing { std::vector<uint8_t> packet; uint32_t data_dest{}; std::vector<uint8_t> data; };
     std::deque<Outgoing> sif0_;
@@ -65,6 +71,26 @@ public:
         servers_[sid]={sid,token,allocate(size),size,std::move(handler),std::move(module)};
     }
     bool hasServer(uint32_t sid) const { return servers_.count(sid)!=0; }
+    void addLleServer(uint32_t sid,uint32_t token,uint32_t buffer,AsyncHandler handler,std::string module) {
+        servers_[sid]={sid,token,buffer,0,{},std::move(module),std::move(handler)};
+    }
+    // User-defined SIF commands (cid without bit 31) handled by loaded IOP modules.
+    std::function<bool(uint32_t cid,uint32_t packet)> user_command;
+    void completeCall(uint64_t ticket,uint32_t reply) {
+        auto it=pending_calls_.find(ticket);
+        if(it==pending_calls_.end()) throw std::runtime_error("Unknown IOP RPC completion");
+        auto state=it->second; pending_calls_.erase(it);
+        finishCall(state,reply);
+    }
+    // IOP module -> EE command (sceSifSendCmd on the IOP): extra data then the packet.
+    void sendFromIop(uint32_t cid,uint32_t packet,uint32_t psize,uint32_t ee_dest,uint32_t iop_src,uint32_t size) {
+        Outgoing out; out.packet=copyOut(packet,(psize+3)&~3u);
+        uint32_t header[3]={(psize&0xff)|(size<<8),ee_dest,cid};
+        std::memcpy(out.packet.data(),header,12);
+        out.data_dest=ee_dest; out.data=copyOut(iop_src,(size+3)&~3u);
+        sif0_.push_back(std::move(out));
+    }
+    void pumpPending(uint32_t& dmac_stat) { if(ee_) pump(ee_,dmac_stat); }
 
     // ---- EE kernel SIF register syscalls (SifSetReg 0x79 / SifGetReg 0x7A)
     void setReg(uint32_t reg,uint32_t value) {
@@ -84,6 +110,7 @@ public:
 
     // ---- SifSetDma (0x77): descriptors {src, dest, size, attr} in EE RAM.
     uint32_t setDma(uint8_t* ee,uint32_t descriptors,uint32_t count) {
+        ee_=ee;
         for(uint32_t i=0;i<count;++i) {
             uint32_t d[4]; std::memcpy(d,ee+((descriptors+i*16)&0x1ffffff),16);
             uint32_t src=d[0]&0x1ffffff,dest=d[1]&0x1fffff,size=(d[2]+3)&~3u;
@@ -103,7 +130,7 @@ public:
     }
 private:
     void boot() {
-        servers_.clear(); sif0_.clear(); sif0_busy_=false; heap_=0x00100000;
+        servers_.clear(); sif0_.clear(); sif0_busy_=false; heap_=0x00020000; pending_calls_.clear();
         smcom_=command_buffer; smflag_|=SIFINIT|CMDINIT|BOOTEND;
         if(on_reboot) on_reboot(*this);
     }
@@ -149,13 +176,14 @@ private:
                 for(auto& [sid,s]:servers_) if(s.token==sd) server=&s;
                 if(!server) { stop_reason="iop_rpc_call_unbound sd=0x"+hex(sd); return; }
                 ++rpc_calls;
+                CallState state{rec,pkt,rpc,cd,recvbuf,rsize,rmode};
+                if(server->async) {
+                    auto ticket=next_ticket_++; pending_calls_[ticket]=state;
+                    server->async(fno,server->buffer,ssize,ticket); return;
+                }
                 uint32_t reply=server->handler(*this,int(fno),server->buffer,ssize);
                 if(!stop_reason.empty()) return;
-                auto data=reply?copyOut(reply,(rsize+3)&~3u):std::vector<uint8_t>{};
-                if(rmode) { send(0x80000008,{rec,pkt,rpc,cd,0x8000000a,0,0,0},recvbuf,std::move(data)); return; }
-                if(!data.empty()) std::memcpy(ee+(recvbuf&0x1ffffff),data.data(),data.size());
-                uint32_t done[12]={64,0,0x80000008,0,0,pkt,0,cd,0x8000000a,0,0,0}; // rec_id/rpc_id 0: completion
-                std::memcpy(ee+(pkt&0x1ffffff),done,sizeof done);
+                finishCall(state,reply);
                 return;
             }
             case 0x8000000c: {                                                      // RPC_RDATA
@@ -164,8 +192,18 @@ private:
                 send(0x80000008,{rec,pkt,rpc,cd,0x8000000c,0,0,0},dest,copyOut(src,(size+3)&~3u));
                 return;
             }
-            default: stop_reason="iop_sif_command_unsupported cid=0x"+hex(cid);
+            default:
+                if(!(cid&0x80000000u) && user_command && user_command(cid,p)) return;
+                stop_reason="iop_sif_command_unsupported cid=0x"+hex(cid);
         }
+    }
+    void finishCall(const CallState& s,uint32_t reply) {
+        auto data=reply?copyOut(reply,(s.rsize+3)&~3u):std::vector<uint8_t>{};
+        if(s.rmode) { send(0x80000008,{s.rec,s.pkt,s.rpc,s.cd,0x8000000a,0,0,0},s.recvbuf,std::move(data)); return; }
+        if(!ee_) throw std::runtime_error("IOP RPC completion before any EE transfer");
+        if(!data.empty()) std::memcpy(ee_+(s.recvbuf&0x1ffffff),data.data(),data.size());
+        uint32_t done[12]={64,0,0x80000008,0,0,s.pkt,0,s.cd,0x8000000a,0,0,0}; // rec_id/rpc_id 0: completion
+        std::memcpy(ee_+(s.pkt&0x1ffffff),done,sizeof done);
     }
     static std::string hex(uint32_t v) { char b[16]; std::snprintf(b,sizeof b,"%x",v); return b; }
 };

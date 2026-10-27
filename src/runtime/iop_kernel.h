@@ -1,0 +1,441 @@
+#pragma once
+#include "iop_cpu.h"
+#include "iop_sif.h"
+#include <chrono>
+#include <deque>
+#include <map>
+#include <optional>
+#include <ostream>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+namespace mp2r {
+// Virtual IOP kernel: runs the game's IRX modules on IopCpu and provides the IOP
+// kernel libraries natively (thread manager, semaphores, event flags, interrupts,
+// memory, SIF). Imports bound to another loaded module link to its real code.
+// An import with neither implementation stops with "iop_import_missing lib::index".
+class IopKernel {
+public:
+    using Hle=std::function<void(IopKernel&)>;
+    enum class State { Dormant,Ready,Waiting };
+    enum class Wait { None,Sema,Event,Sleep,Delay,RpcLoop };
+    struct Thread {
+        int id{}; uint32_t attr{},entry{},stack{},stack_size{},gp{},option{}; int priority{},initial_priority{};
+        State state=State::Dormant; Wait wait=Wait::None; int wait_id{}; uint64_t order{};
+        std::array<uint32_t,32> r{}; uint32_t pc{},hi{},lo{};
+        int wakeups{}; std::chrono::steady_clock::time_point wake_at{};
+        uint32_t event_bits{},event_mode{},event_result{}; // WaitEventFlag arguments
+    };
+    struct Sema { int count{},max{}; uint32_t attr{},option{}; };
+    struct EventFlag { uint32_t bits{},attr{},option{}; };
+    struct RpcServer { uint32_t sd,sid,func,buf,queue; };
+    struct PendingCall { uint32_t sd,fno,buf,size; uint64_t ticket; };
+
+    IopSif& sif;
+    IopCpu cpu;
+    std::ostream* log{};
+    std::function<uint8_t*(uint32_t)> ee_memory;           // EE RAM for IOP->EE SIF DMA
+    std::string stop_reason;
+    std::map<std::pair<std::string,int>,Hle> hle;           // native libraries
+    std::vector<std::string> loaded;
+
+    // Sentinel return addresses inside the unused low IOP page.
+    static constexpr uint32_t thread_exit=0xf00,rpc_return=0xf10,call_return=0xf20;
+
+    explicit IopKernel(IopSif& s):sif(s) {
+        cpu.bus.read=[this](uint32_t a,unsigned n){ return read(a,n); };
+        cpu.bus.write=[this](uint32_t a,uint32_t v,unsigned n){ write(a,v,n); };
+        cpu.trap=[this](IopCpu&,uint32_t code,bool brk){ stop("iop_guest_"+std::string(brk?"break":"syscall")+"_"+std::to_string(code)); return false; };
+        installCore();
+    }
+
+    // ---------------- memory
+    uint32_t read(uint32_t a,unsigned n) {
+        uint32_t p=a&0x1fffffffu,v=0;
+        if(p<IopSif::ram_size) { std::memcpy(&v,sif.ram(p,n),n); return v; }
+        if(p>=0x1f800000u && p<0x1f800400u) { std::memcpy(&v,scratch_.data()+(p-0x1f800000u),n); return v; }
+        stop("iop_mmio_read 0x"+hex(a)); return 0;
+    }
+    void write(uint32_t a,uint32_t v,unsigned n) {
+        uint32_t p=a&0x1fffffffu;
+        if(p<IopSif::ram_size) { std::memcpy(sif.ram(p,n),&v,n); return; }
+        if(p>=0x1f800000u && p<0x1f800400u) { std::memcpy(scratch_.data()+(p-0x1f800000u),&v,n); return; }
+        stop("iop_mmio_write 0x"+hex(a));
+    }
+    uint32_t arg(int i) { return i<4?cpu.r[4+i]:read(cpu.r[29]+16+4*(i-4),4); }
+    void ret(uint32_t v) { cpu.r[2]=v; }
+    void stop(std::string why) { if(stop_reason.empty()) stop_reason=std::move(why); cpu.stop_reason=stop_reason; }
+
+    // ---------------- module loading (IRX: ELF type 0xFF80 with .iopmod and REL sections)
+    bool loadModule(const std::vector<uint8_t>& irx,const std::string& name,const std::string& args) {
+        auto u16=[&](size_t o){ uint16_t v; std::memcpy(&v,irx.data()+o,2); return v; };
+        auto u32=[&](size_t o){ uint32_t v; std::memcpy(&v,irx.data()+o,4); return v; };
+        if(irx.size()<52 || u32(0)!=0x464c457fu || u16(16)!=0xff80) { stop("iop_module_not_irx "+name); return false; }
+        uint32_t phoff=u32(28),shoff=u32(32),shnum=u16(48);
+        uint32_t info_off=u32(phoff+4),load_off=u32(phoff+32+4),filesz=u32(phoff+32+16),memsz=u32(phoff+32+20);
+        uint32_t entry=u32(info_off+4),gp=u32(info_off+8),bss=u32(info_off+20);
+        uint32_t base=sif.allocate(memsz+bss+64);
+        std::memcpy(sif.ram(base,filesz),irx.data()+load_off,filesz);
+        std::memset(sif.ram(base+filesz,memsz-filesz+bss),0,memsz-filesz+bss);
+        for(uint32_t s=0;s<shnum;++s) {
+            size_t sh=shoff+s*40;
+            if(u32(sh+4)!=9) continue; // SHT_REL
+            uint32_t off=u32(sh+16),size=u32(sh+20);
+            std::vector<std::pair<uint32_t,uint32_t>> pending_hi;
+            for(uint32_t r=off;r<off+size;r+=8) {
+                uint32_t where=base+u32(r),type=u32(r+4)&0xff,w=read(where,4);
+                switch(type) {
+                    case 2: write(where,w+base,4); break;                                         // R_MIPS_32
+                    case 4: write(where,(w&0xfc000000u)|(((w&0x3ffffffu)+(base>>2))&0x3ffffffu),4); break; // R_MIPS_26
+                    case 5: pending_hi.push_back({where,w}); break;                                // R_MIPS_HI16
+                    case 6: {                                                                      // R_MIPS_LO16
+                        uint32_t lo=uint32_t(int32_t(int16_t(w&0xffff)));
+                        for(auto [hw,hv]:pending_hi) {
+                            uint32_t value=((hv&0xffff)<<16)+lo+base;
+                            write(hw,(hv&0xffff0000u)|(((value+0x8000u)>>16)&0xffff),4);
+                        }
+                        pending_hi.clear();
+                        write(where,(w&0xffff0000u)|((lo+base)&0xffff),4);
+                        break;
+                    }
+                    case 0: break;
+                    default: stop("iop_relocation_unsupported "+std::to_string(type)); return false;
+                }
+            }
+        }
+        linkImports(base,memsz);
+        loaded.push_back(name);
+        // Module entry: _start(argc, argv) runs to completion on a loader context.
+        uint32_t argv=sif.allocate(0x200),strings=argv+0x40,argc=0;
+        std::vector<std::string> list{name};
+        for(size_t p=0;p<args.size();) { auto e=args.find('\0',p); list.push_back(args.substr(p,e-p)); if(e==std::string::npos) break; p=e+1; }
+        for(auto& s:list) { if(argc>=15) break; write(argv+4*argc++,strings,4); std::memcpy(sif.ram(strings,s.size()+1),s.c_str(),s.size()+1); strings+=uint32_t(s.size()+1); }
+        write(argv+4*argc,0,4);
+        uint32_t result=callGuest(base+entry,{argc,argv},base+gp);
+        if(log) *log<<"IOP module "<<name<<" base=0x"<<std::hex<<base<<" entry=0x"<<base+entry<<" result="<<result<<std::dec<<'\n';
+        return stop_reason.empty() && (result&3)!=1; // NO_RESIDENT_END keeps nothing loaded
+    }
+    // Runs guest code to its return on a private stack; it must not block.
+    uint32_t callGuest(uint32_t pc,std::vector<uint32_t> args,std::optional<uint32_t> gp={}) {
+        auto saved=snapshot();
+        if(!call_stack_) call_stack_=sif.allocate(0x4000)+0x4000;
+        for(size_t i=0;i<args.size() && i<4;++i) cpu.r[4+i]=args[i];
+        if(gp) cpu.r[28]=*gp;
+        cpu.r[29]=call_stack_-0x40; cpu.r[31]=call_return; cpu.jump(pc);
+        ++nested_;
+        uint64_t budget=50000000;
+        while(cpu.pc!=call_return && stop_reason.empty() && budget--) {
+            if(dispatchImport()) continue;
+            if(!cpu.step()) { stop(cpu.stop_reason); break; }
+        }
+        --nested_;
+        if(budget==uint64_t(-1)) stop("iop_guest_call_budget 0x"+hex(pc));
+        uint32_t v=cpu.r[2]; restore(saved); return v;
+    }
+
+    // ---------------- scheduler: runs IOP threads until all wait or the budget expires
+    void run(uint64_t budget) {
+        while(budget && stop_reason.empty()) {
+            wakeDelayed();
+            if(!current_ && !schedule()) return;
+            auto& t=threads_.at(current_);
+            if(cpu.pc==thread_exit) { t.state=State::Dormant; current_=0; continue; }
+            if(cpu.pc==rpc_return) { finishRpc(); continue; }
+            if(dispatchImport()) { --budget; continue; }
+            if(!cpu.step()) { stop(cpu.stop_reason); return; }
+            --budget;
+        }
+    }
+    // IOP reboot: every module, thread and kernel object disappears.
+    void reset() {
+        stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
+        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear();
+        active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; loaded.clear();
+        sif.user_command=nullptr;
+    }
+    bool idle() const {
+        for(auto& [id,t]:threads_) if(t.state==State::Ready) return false;
+        return current_==0;
+    }
+    uint64_t instructions() const { return cpu.instructions; }
+
+private:
+    std::array<uint8_t,0x400> scratch_{};
+    std::map<uint32_t,std::pair<std::string,int>> stubs_;
+    std::map<std::string,std::vector<uint32_t>> libraries_;   // LLE exports
+    std::map<int,Thread> threads_;
+    std::map<int,Sema> semas_;
+    std::map<int,EventFlag> events_;
+    std::map<uint32_t,int> queue_thread_;                       // RPC queue -> serving thread
+    std::map<uint32_t,RpcServer> servers_;                      // by sd
+    std::deque<PendingCall> calls_;
+    std::map<uint32_t,std::pair<uint32_t,uint32_t>> cmd_handlers_; // cid -> handler, arg
+    std::optional<PendingCall> active_call_;
+    std::optional<Thread> rpc_saved_;
+    int next_id_=1,current_{}; uint64_t order_{}; int nested_{};
+    uint32_t call_stack_{};
+    struct Snapshot { std::array<uint32_t,32> r; uint32_t pc,next_pc,hi,lo; };
+    Snapshot snapshot() const { return {cpu.r,cpu.pc,cpu.next_pc,cpu.hi,cpu.lo}; }
+    void restore(const Snapshot& s) { cpu.r=s.r; cpu.pc=s.pc; cpu.next_pc=s.next_pc; cpu.hi=s.hi; cpu.lo=s.lo; }
+    static std::string hex(uint32_t v) { char b[16]; std::snprintf(b,sizeof b,"%x",v); return b; }
+
+    void linkImports(uint32_t base,uint32_t size) {
+        for(uint32_t a=base;a+20<=base+size;a+=4) {
+            uint32_t magic=read(a,4);
+            if(magic==0x41c00000u) {                                   // export table: registered at RegisterLibraryEntries
+                continue;
+            }
+            if(magic!=0x41e00000u) continue;
+            std::string lib; for(int i=0;i<8;++i) { char c=char(read(a+12+i,1)); if(!c) break; lib+=c; }
+            for(uint32_t s=a+20;read(s,4)==0x03e00008u && (read(s+4,4)>>16)==0x2400;s+=8)
+                stubs_[s]={lib,int(read(s+4,4)&0xffff)};
+        }
+    }
+    // Executes an import stub: LLE export if the library is loaded, else native code.
+    bool dispatchImport() {
+        auto it=stubs_.find(cpu.pc);
+        if(it==stubs_.end()) return false;
+        const auto& [lib,index]=it->second;
+        if(auto l=libraries_.find(lib);l!=libraries_.end() && index<int(l->second.size()) && l->second[index]) {
+            cpu.jump(l->second[index]); return true;
+        }
+        auto h=hle.find({lib,index});
+        if(h==hle.end()) { stop("iop_import_missing "+lib+"::"+std::to_string(index)); return true; }
+        uint32_t ra=cpu.r[31]; int caller=current_;
+        h->second(*this);
+        // A blocking call switched threads; the caller resumes at ra when woken.
+        if(current_==caller && cpu.pc==it->first) cpu.jump(ra);
+        else if(caller && threads_.count(caller)) threads_[caller].pc=ra;
+        return true;
+    }
+    void save(Thread& t) { t.r=cpu.r; t.pc=cpu.pc; t.hi=cpu.hi; t.lo=cpu.lo; }
+    void load(const Thread& t) { cpu.r=t.r; cpu.jump(t.pc); cpu.hi=t.hi; cpu.lo=t.lo; }
+    bool schedule() {
+        Thread* best=nullptr;
+        for(auto& [id,t]:threads_) if(t.state==State::Ready && (!best || t.priority<best->priority || (t.priority==best->priority && t.order<best->order))) best=&t;
+        if(!best) return false;
+        current_=best->id; load(*best); return true;
+    }
+    // Blocks the current thread; pc stays at the stub so dispatchImport resumes at ra.
+    void block(Wait w,int id) {
+        auto& t=threads_.at(current_);
+        save(t); t.state=State::Waiting; t.wait=w; t.wait_id=id; t.order=++order_; current_=0;
+    }
+    void ready(Thread& t,uint32_t result) { t.state=State::Ready; t.wait=Wait::None; t.r[2]=result; t.order=++order_; }
+    // Preempt if a woken thread outranks the running one (called from non-interrupt services).
+    void yieldTo() {
+        if(!current_ || nested_) return;
+        auto& cur=threads_.at(current_);
+        for(auto& [id,t]:threads_) if(t.state==State::Ready && t.priority<cur.priority) {
+            cur.state=State::Ready; cur.order=++order_; save(cur); cur.pc=cpu.r[31]; current_=0; return;
+        }
+    }
+    void wakeDelayed() {
+        auto now=std::chrono::steady_clock::now();
+        for(auto& [id,t]:threads_) if(t.state==State::Waiting && t.wait==Wait::Delay && now>=t.wake_at) ready(t,0);
+    }
+    void finishRpc() {
+        uint32_t reply=cpu.r[2]; auto call=*active_call_; active_call_.reset();
+        auto& t=threads_.at(current_); load(*rpc_saved_); t=*rpc_saved_; rpc_saved_.reset();
+        save(t); t.state=State::Waiting; t.wait=Wait::RpcLoop; current_=0;
+        sif.completeCall(call.ticket,reply);
+        startRpc();
+    }
+    void startRpc() {
+        if(active_call_ || calls_.empty()) return;
+        auto call=calls_.front();
+        auto& server=servers_.at(call.sd);
+        auto q=queue_thread_.find(server.queue);
+        if(q==queue_thread_.end()) { stop("iop_rpc_queue_without_thread"); return; }
+        auto& t=threads_.at(q->second);
+        if(t.state!=State::Waiting || t.wait!=Wait::RpcLoop) return; // serving thread busy; retried later
+        calls_.pop_front(); active_call_=call; rpc_saved_=t;
+        t.r[4]=call.fno; t.r[5]=call.buf; t.r[6]=call.size; t.r[31]=rpc_return; t.r[29]-=0x80; t.pc=server.func;
+        ready(t,t.r[2]);
+    }
+    void installCore();
+};
+
+inline void IopKernel::installCore() {
+    auto& k=*this;
+    auto add=[&](const char* lib,int index,Hle fn){ hle[{lib,index}]=std::move(fn); };
+    // sysmem
+    add("sysmem",4,[](IopKernel& k){ k.ret(k.sif.allocate(k.arg(1))); });
+    add("sysmem",5,[](IopKernel& k){ k.ret(0); });
+    add("sysmem",7,[](IopKernel& k){ k.ret(IopSif::ram_size-0x180000); });
+    add("sysmem",14,[](IopKernel& k){ k.ret(0); });
+    // loadcore
+    add("loadcore",6,[](IopKernel& k){
+        uint32_t t=k.arg(0); if(k.read(t,4)!=0x41c00000u) { k.ret(-1u); return; }
+        std::string lib; for(int i=0;i<8;++i) { char c=char(k.read(t+12+i,1)); if(!c) break; lib+=c; }
+        auto& f=k.libraries_[lib]; f.clear();
+        for(uint32_t a=t+20;k.read(a,4);a+=4) f.push_back(k.read(a,4));
+        if(k.log) *k.log<<"IOP library "<<lib<<" exports="<<f.size()<<'\n';
+        k.ret(0);
+    });
+    add("loadcore",7,[](IopKernel& k){ k.ret(0); });
+    // intrman: interrupts are delivered synchronously by MP2R, so the critical sections are no-ops.
+    add("intrman",17,[](IopKernel& k){ if(k.arg(0)) k.write(k.arg(0),0,4); k.ret(0); });
+    add("intrman",18,[](IopKernel& k){ k.ret(0); });
+    add("intrman",23,[](IopKernel& k){ k.ret(k.nested_?1:0); });
+    // stdio / Kprintf
+    add("stdio",4,[](IopKernel& k){ k.ret(0); });
+    // thbase
+    add("thbase",4,[](IopKernel& k){
+        uint32_t p=k.arg(0); Thread t; t.id=k.next_id_++;
+        t.attr=k.read(p,4); t.option=k.read(p+4,4); t.entry=k.read(p+8,4); t.stack_size=k.read(p+12,4);
+        t.priority=t.initial_priority=int(k.read(p+16,4)); t.stack=k.sif.allocate(t.stack_size); t.gp=k.cpu.r[28];
+        k.threads_[t.id]=t; k.ret(uint32_t(t.id));
+    });
+    add("thbase",6,[](IopKernel& k){
+        auto it=k.threads_.find(int(k.arg(0))); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
+        auto& t=it->second; t.r={}; t.r[4]=k.arg(1); t.r[28]=t.gp; t.r[29]=(t.stack+t.stack_size-0x10)&~15u; t.r[31]=thread_exit;
+        t.pc=t.entry; t.priority=t.initial_priority; k.ready(t,0); k.ret(0); k.yieldTo();
+    });
+    add("thbase",8,[](IopKernel& k){ k.threads_.at(k.current_).state=State::Dormant; k.current_=0; });
+    add("thbase",14,[](IopKernel& k){
+        int id=int(k.arg(0)); if(!id) id=k.current_;
+        auto it=k.threads_.find(id); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
+        it->second.priority=int(k.arg(1)); k.ret(0); k.yieldTo();
+    });
+    add("thbase",20,[](IopKernel& k){ k.ret(uint32_t(k.current_)); });
+    add("thbase",24,[](IopKernel& k){
+        auto& t=k.threads_.at(k.current_);
+        if(t.wakeups) { --t.wakeups; k.ret(0); return; }
+        k.ret(0); k.block(Wait::Sleep,0);
+    });
+    auto wake=[](IopKernel& k){
+        auto it=k.threads_.find(int(k.arg(0))); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
+        auto& t=it->second;
+        if(t.state==State::Waiting && t.wait==Wait::Sleep) k.ready(t,0); else ++t.wakeups;
+        k.ret(0);
+    };
+    add("thbase",25,[wake](IopKernel& k){ wake(k); k.yieldTo(); });
+    add("thbase",26,wake);
+    add("thbase",33,[](IopKernel& k){
+        auto& t=k.threads_.at(k.current_);
+        t.wake_at=std::chrono::steady_clock::now()+std::chrono::microseconds(k.arg(0)); k.ret(0); k.block(Wait::Delay,0);
+    });
+    auto now_clock=[]{ return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count())*36864/1000000; };
+    add("thbase",34,[now_clock](IopKernel& k){ uint64_t c=now_clock(); k.write(k.arg(0),uint32_t(c),4); k.write(k.arg(0)+4,uint32_t(c>>32),4); k.ret(0); });
+    add("thbase",43,[now_clock](IopKernel& k){ k.ret(uint32_t(now_clock())); });
+    add("thbase",39,[](IopKernel& k){ uint64_t c=uint64_t(k.arg(0))*36864/1000; k.write(k.arg(1),uint32_t(c),4); k.write(k.arg(1)+4,uint32_t(c>>32),4); k.ret(0); });
+    add("thbase",40,[](IopKernel& k){
+        uint64_t c=k.read(k.arg(0),4)|uint64_t(k.read(k.arg(0)+4,4))<<32,us=c*1000/36864;
+        k.write(k.arg(1),uint32_t(us/1000000),4); k.write(k.arg(2),uint32_t(us%1000000),4); k.ret(0);
+    });
+    // thsemap
+    add("thsemap",4,[](IopKernel& k){
+        uint32_t p=k.arg(0); int id=k.next_id_++;
+        k.semas_[id]={int(k.read(p+4,4)),int(k.read(p+8,4)),k.read(p,4),k.read(p+12,4)}; k.ret(uint32_t(id));
+    });
+    add("thsemap",5,[](IopKernel& k){ k.semas_.erase(int(k.arg(0))); k.ret(0); });
+    auto signal=[](IopKernel& k){
+        int id=int(k.arg(0)); auto it=k.semas_.find(id); if(it==k.semas_.end()) { k.ret(uint32_t(-408)); return; }
+        Thread* first=nullptr;
+        for(auto& [tid,t]:k.threads_) if(t.state==State::Waiting && t.wait==Wait::Sema && t.wait_id==id && (!first || t.order<first->order)) first=&t;
+        if(first) k.ready(*first,0); else if(it->second.count<it->second.max) ++it->second.count;
+        k.ret(0);
+    };
+    add("thsemap",6,[signal](IopKernel& k){ signal(k); k.yieldTo(); });
+    add("thsemap",7,signal);
+    add("thsemap",8,[](IopKernel& k){
+        auto it=k.semas_.find(int(k.arg(0))); if(it==k.semas_.end()) { k.ret(uint32_t(-408)); return; }
+        if(it->second.count>0) { --it->second.count; k.ret(0); return; }
+        k.ret(0); k.block(Wait::Sema,it->first);
+    });
+    add("thsemap",9,[](IopKernel& k){
+        auto it=k.semas_.find(int(k.arg(0))); if(it==k.semas_.end()) { k.ret(uint32_t(-408)); return; }
+        if(it->second.count>0) { --it->second.count; k.ret(0); } else k.ret(uint32_t(-419));
+    });
+    // thevent: WaitEventFlag modes AND=0/OR=1, clear bit 0x10, clear-pattern 0x20.
+    add("thevent",4,[](IopKernel& k){ uint32_t p=k.arg(0); int id=k.next_id_++; k.events_[id]={k.read(p+8,4),k.read(p,4),k.read(p+4,4)}; k.ret(uint32_t(id)); });
+    add("thevent",5,[](IopKernel& k){ k.events_.erase(int(k.arg(0))); k.ret(0); });
+    auto set_event=[](IopKernel& k){
+        int id=int(k.arg(0)); auto it=k.events_.find(id); if(it==k.events_.end()) { k.ret(uint32_t(-409)); return; }
+        auto& e=it->second; e.bits|=k.arg(1);
+        for(auto& [tid,t]:k.threads_) {
+            if(t.state!=State::Waiting || t.wait!=Wait::Event || t.wait_id!=id) continue;
+            bool ok=(t.event_mode&1)?(e.bits&t.event_bits)!=0:(e.bits&t.event_bits)==t.event_bits;
+            if(!ok) continue;
+            if(t.event_result) k.write(t.event_result,e.bits,4);
+            if(t.event_mode&0x10) e.bits=0; else if(t.event_mode&0x20) e.bits&=~t.event_bits;
+            k.ready(t,0);
+        }
+        k.ret(0);
+    };
+    add("thevent",6,[set_event](IopKernel& k){ set_event(k); k.yieldTo(); });
+    add("thevent",7,set_event);
+    auto clear_event=[](IopKernel& k){ auto it=k.events_.find(int(k.arg(0))); if(it!=k.events_.end()) it->second.bits&=k.arg(1); k.ret(0); };
+    add("thevent",8,clear_event); add("thevent",9,clear_event);
+    auto wait_event=[](IopKernel& k,bool poll){
+        int id=int(k.arg(0)); auto it=k.events_.find(id); if(it==k.events_.end()) { k.ret(uint32_t(-409)); return; }
+        auto& e=it->second; uint32_t bits=k.arg(1),mode=k.arg(2),result=k.arg(3);
+        bool ok=(mode&1)?(e.bits&bits)!=0:(e.bits&bits)==bits;
+        if(ok) {
+            if(result) k.write(result,e.bits,4);
+            if(mode&0x10) e.bits=0; else if(mode&0x20) e.bits&=~bits;
+            k.ret(0); return;
+        }
+        if(poll) { k.ret(uint32_t(-421)); return; }
+        auto& t=k.threads_.at(k.current_); t.event_bits=bits; t.event_mode=mode; t.event_result=result;
+        k.ret(0); k.block(Wait::Event,id);
+    };
+    add("thevent",10,[wait_event](IopKernel& k){ wait_event(k,false); });
+    add("thevent",11,[wait_event](IopKernel& k){ wait_event(k,true); });
+    // sysclib (string/memory helpers executed natively on IOP RAM)
+    add("sysclib",11,[](IopKernel& k){ k.ret(uint32_t(std::memcmp(k.sif.ram(k.arg(0),k.arg(2)),k.sif.ram(k.arg(1),k.arg(2)),k.arg(2)))); });
+    add("sysclib",12,[](IopKernel& k){ std::memmove(k.sif.ram(k.arg(0),k.arg(2)),k.sif.ram(k.arg(1),k.arg(2)),k.arg(2)); k.ret(k.arg(0)); });
+    add("sysclib",14,[](IopKernel& k){ std::memset(k.sif.ram(k.arg(0),k.arg(2)),int(k.arg(1)&0xff),k.arg(2)); k.ret(k.arg(0)); });
+    add("sysclib",27,[](IopKernel& k){ k.ret(uint32_t(k.sif.readString(k.arg(0),0x100000).size())); });
+    add("sysclib",23,[](IopKernel& k){ auto s=k.sif.readString(k.arg(1),0x100000); std::memcpy(k.sif.ram(k.arg(0),s.size()+1),s.c_str(),s.size()+1); k.ret(k.arg(0)); });
+    add("sysclib",22,[](IopKernel& k){ auto a=k.sif.readString(k.arg(0),0x100000),b=k.sif.readString(k.arg(1),0x100000); k.ret(uint32_t(a<b?-1:a>b?1:0)); });
+    // sifman: IOP->EE DMA copies directly into EE RAM.
+    auto set_dma=[](IopKernel& k){
+        uint32_t list=k.arg(0),count=k.arg(1);
+        for(uint32_t i=0;i<count;++i) {
+            uint32_t src=k.read(list+i*16,4),dest=k.read(list+i*16+4,4),size=(k.read(list+i*16+8,4)+3)&~3u;
+            std::memcpy(k.ee_memory(dest&0x1ffffff),k.sif.ram(src,size),size);
+        }
+        k.ret(1);
+    };
+    add("sifman",7,set_dma); add("sifman",32,set_dma);
+    add("sifman",5,[](IopKernel& k){ k.ret(0); });
+    add("sifman",8,[](IopKernel& k){ k.ret(uint32_t(-1)); });
+    add("sifman",29,[](IopKernel& k){ k.ret(1); });
+    // sifcmd: the module-side SIF library bridges into IopSif.
+    add("sifcmd",4,[](IopKernel& k){ k.ret(0); });
+    add("sifcmd",14,[](IopKernel& k){ k.ret(0); });
+    add("sifcmd",8,[](IopKernel& k){ k.ret(0); });
+    add("sifcmd",10,[](IopKernel& k){
+        uint32_t cid=k.arg(0); k.cmd_handlers_[cid]={k.arg(1),k.arg(2)};
+        k.sif.user_command=[&k](uint32_t c,uint32_t packet){
+            auto it=k.cmd_handlers_.find(c);
+            if(it==k.cmd_handlers_.end()) return false;
+            k.callGuest(it->second.first,{packet,it->second.second});
+            return true;
+        };
+        k.ret(0);
+    });
+    add("sifcmd",11,[](IopKernel& k){ k.cmd_handlers_.erase(k.arg(0)); k.ret(0); });
+    auto send_cmd=[](IopKernel& k){
+        uint32_t cid=k.arg(0),packet=k.arg(1),psize=k.arg(2),src=k.arg(3),dest=k.arg(4),size=k.arg(5);
+        k.sif.sendFromIop(cid,packet,psize,dest,src,size);
+        k.ret(1);
+    };
+    add("sifcmd",12,send_cmd); add("sifcmd",13,send_cmd);
+    add("sifcmd",19,[](IopKernel& k){ k.queue_thread_[k.arg(0)]=int(k.arg(1)); k.ret(0); });
+    add("sifcmd",17,[](IopKernel& k){
+        uint32_t sd=k.arg(0),sid=k.arg(1),func=k.arg(2),buf=k.arg(3),queue=k.arg(6);
+        k.servers_[sd]={sd,sid,func,buf,queue};
+        k.sif.addLleServer(sid,sd,buf,[&k,sd](uint32_t fno,uint32_t b,uint32_t size,uint64_t ticket){
+            k.calls_.push_back({sd,fno,b,size,ticket}); k.startRpc();
+        },k.loaded.empty()?"":k.loaded.back());
+        if(k.log) *k.log<<"IOP RPC server sid=0x"<<std::hex<<sid<<" func=0x"<<func<<std::dec<<'\n';
+        k.ret(0);
+    });
+    add("sifcmd",22,[](IopKernel& k){ k.ret(0); k.block(Wait::RpcLoop,int(k.arg(0))); k.startRpc(); });
+    (void)k;
+}
+}

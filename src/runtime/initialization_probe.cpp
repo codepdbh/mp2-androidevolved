@@ -14,7 +14,8 @@ uint16_t half(const uint8_t* bytes,std::size_t size,std::size_t offset) {
 }
 }
 InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std::ostream& log,std::string_view boot_path,
-                                     uint32_t kernel_table_base,unsigned max_checkpoints,uint64_t max_executions) {
+                                     uint32_t kernel_table_base,unsigned max_checkpoints,uint64_t max_executions,
+                                     std::string_view disc_root) {
     if(bytes!=4984624 || word(elf,bytes,0)!=0x464c457fu || elf[4]!=1 || elf[5]!=1 || half(elf,bytes,18)!=8 || word(elf,bytes,24)!=0x100008)
         throw std::runtime_error("Unexpected PAL ELF layout; caller must verify SHA-256");
     std::vector<uint8_t> ram(PS2_RAM_SIZE,0);
@@ -34,6 +35,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     if(max_checkpoints==0) throw std::runtime_error("Zero checkpoint budget");
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); host.registerGuestFunctions();
     host.boot_path=boot_path; host.guest_ram=ram.data();
+    if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); }
     try {
         while(!host.blocked && host.executions<max_executions) {
             host.clockTimers();
@@ -42,6 +44,8 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             if(host.beginInterrupt(&cpu)) continue;
             if(host.idle) {
                 if(cpu.pc!=MP2InitializationRuntime::idle_pc) throw std::runtime_error("Idle context lost");
+                host.runIop(200000); host.checkIop(&cpu);
+                if(!host.iop_kernel.idle()) continue;
                 auto waited=std::chrono::steady_clock::now()-host.idle_since;
                 if(host.idle_since.time_since_epoch().count()==0) host.idle_since=std::chrono::steady_clock::now();
                 else if(waited>std::chrono::seconds(5)) { host.reason="idle_without_interrupts"; break; }
@@ -49,6 +53,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
                 continue;
             }
             host.idle_since={};
+            if((host.executions&255)==0) { host.runIop(20000); host.checkIop(&cpu); }
             auto it=host.entries.find(cpu.pc);
             if(it==host.entries.end()) { host.stopMissing(&cpu,cpu.pc,host.source); break; }
             if(!host.syscall_frames.empty() && cpu.pc==host.syscall_frames.back().resume) {

@@ -18,7 +18,7 @@ struct Ee {
     }
 };
 int main() {
-    IopSif iop; registerResidentIopServices(iop); iop.on_reboot=registerResidentIopServices;
+    IopSif iop; registerResidentIopServices(iop); iop.on_reboot=[](IopSif& s){ registerResidentIopServices(s); };
     Ee ee;
     check((iop.getReg(4)&(IopSif::SIFINIT|IopSif::CMDINIT|IopSif::BOOTEND))==0x70000 && iop.getReg(2)==IopSif::command_buffer,"boot flags");
     // sceSifInitCmd: INIT_CMD opt=0 gives the EE receive buffer (uncached alias).

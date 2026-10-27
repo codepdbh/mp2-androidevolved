@@ -12,6 +12,11 @@
 #include "ee_special_memory.h"
 #include "ee_vblank.h"
 #include "iop_modules.h"
+#include "iop_kernel.h"
+#include "disc_image.h"
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include "kernel_syscall_table.h"
 #include "ps2_syscalls.h"
@@ -251,9 +256,38 @@ public:
     unsigned checkpoint_limit;
     explicit MP2InitializationRuntime(std::ostream& output,uint32_t table_base,unsigned limit)
         :syscall_table(table_base),log(output),checkpoint_limit(limit) {
-        iop.log=&log; iop.on_reboot=mp2r::registerResidentIopServices; mp2r::registerResidentIopServices(iop);
+        iop.log=&log; iop_kernel.log=&log;
+        iop_kernel.ee_memory=[this](uint32_t address){ return guest_ram+(address&0x1ffffff); };
+        auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
+        iop.on_reboot=[this,loader](mp2r::IopSif& sif){ iop_kernel.reset(); mp2r::registerResidentIopServices(sif,loader); };
+        mp2r::registerResidentIopServices(iop,loader);
     }
     mp2r::IopSif iop;
+    mp2r::IopKernel iop_kernel{iop};
+    std::optional<mp2r::DiscImage> disc;
+    std::filesystem::path disc_root;
+    // Hardware drivers MP2R provides as native libraries instead of running their IRX.
+    static bool nativeIopModule(const std::string& name) { return name=="LIBSD.IRX" || name=="SIO2MAN.IRX"; }
+    int loadIopModule(const std::string& path,const std::string& name,const std::string& args) {
+        if(nativeIopModule(name)) return int(iop.modules.size()+1);
+        if(disc_root.empty()) { iop.stop_reason="iop_module_without_disc "+name; return -1; }
+        // "cdrom0:\DIR\FILE;1" -> <disc root>/DIR/FILE
+        auto relative=path.substr(path.find(':')+1);
+        if(auto semi=relative.find(';');semi!=std::string::npos) relative.resize(semi);
+        std::replace(relative.begin(),relative.end(),'\\','/');
+        while(!relative.empty() && relative.front()=='/') relative.erase(0,1);
+        std::ifstream file(disc_root/relative,std::ios::binary);
+        if(!file) { log<<"IOP module not found on disc: "<<path<<'\n'; return -203; }      // KE_NOFILE
+        std::vector<uint8_t> irx((std::istreambuf_iterator<char>(file)),{});
+        if(!iop_kernel.loadModule(irx,name,args)) { iop.stop_reason=iop_kernel.stop_reason.empty()?"iop_module_no_resident "+name:iop_kernel.stop_reason; return -1; }
+        return int(iop.modules.size()+1);
+    }
+    // Lets IOP threads run; replies they queue for the EE are pumped through SIF0.
+    void runIop(uint64_t budget) {
+        iop_kernel.run(budget);
+        if(!iop_kernel.stop_reason.empty() && iop.stop_reason.empty()) iop.stop_reason=iop_kernel.stop_reason;
+        iop.pumpPending(dmac_stat);
+    }
     void checkIop(R5900Context* cpu) {
         if(iop.stop_reason.empty()) return;
         reason=iop.stop_reason; blocked_source=cpu->pc; throw MemoryStop{};
