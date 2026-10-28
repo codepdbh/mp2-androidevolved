@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +20,14 @@ public:
     using Sink=std::function<void(const uint8_t* qwords,uint32_t count,uint32_t tag_lo,uint32_t tag_hi,bool has_tag)>;
     std::array<Channel,10> channels{};
     std::array<Sink,10> sinks{};
+    // Peripheral -> memory channels (IPU_FROM): copy up to max_qwords into dst, return the count.
+    using Source=std::function<uint32_t(uint8_t* dst,uint32_t max_qwords)>;
+    std::array<Source,10> sources{};
+    // Flow-controlled memory -> peripheral channels (IPU_TO): qwords the peripheral accepts now.
+    // Such a channel stays active (STR set) and continues through pumpTo() as room appears.
+    using Capacity=std::function<uint32_t()>;
+    std::array<Capacity,10> capacity{};
+    std::array<bool,10> chain_end{};
     // D_CTRL starts with DMAE set: the EE kernel enables the DMAC during boot, before any game code.
     uint32_t ctrl=1,pcr{},sqwc{},rbsr{},rbor{},stadr{},enable=0x1201;   // D_ENABLER reset value
     std::string stop_reason;
@@ -64,7 +73,68 @@ public:
             case 0x1000e040u:rbsr=v;break; case 0x1000e050u:rbor=v;break; case 0x1000e060u:stadr=v;break; case 0x1000f590u:enable=v;break; }
         return -1;
     }
+    // Continues a peripheral -> memory transfer; returns the channel when it completes, else -1.
+    int pump(int n) {
+        auto& c=channels[n];
+        if(!(c.chcr&0x100) || !sources[n]) return -1;
+        if(((c.chcr>>2)&3)!=0) { stop_reason="dma_to_memory_mode_unsupported"; throw std::runtime_error(stop_reason); }
+        while(c.qwc) {
+            uint8_t* dst=const_cast<uint8_t*>(memory(c.madr,1));
+            uint32_t got=sources[n](dst,1);
+            if(!got) return -1;                                    // wait for more peripheral output
+            c.madr+=16; --c.qwc; ++qwords_transferred;
+        }
+        c.chcr&=~0x100u; return n;
+    }
+    // Continues a flow-controlled memory -> peripheral transfer; returns the channel when it completes.
+    int pumpTo(int n) {
+        auto& c=channels[n];
+        if(!(c.chcr&0x100) || !(ctrl&1) || !capacity[n]) return -1;
+        uint32_t mode=(c.chcr>>2)&3;
+        if(mode>1) { stop_reason="dma_mode_unsupported "+std::to_string(mode); throw std::runtime_error(stop_reason); }
+        for(int guard=0;guard<1000000;++guard) {
+            while(c.qwc) {
+                uint32_t room=capacity[n](); if(!room) return -1;  // peripheral FIFO full
+                uint32_t k=std::min(room,c.qwc);
+                deliver(n,c.madr,k); c.madr+=k*16; c.qwc-=k;
+            }
+            if(mode==0 || chain_end[n]) { c.chcr&=~0x100u; return n; }
+            chain_end[n]=nextTag(n);
+        }
+        stop_reason="dma_chain_runaway"; throw std::runtime_error(stop_reason);
+    }
 private:
+    // Reads the source-chain tag at TADR and sets up MADR/QWC; returns true when the chain ends
+    // after that block (end/refe/ret with an empty stack, or IRQ with CHCR.TIE).
+    bool nextTag(int n) {
+        auto& c=channels[n];
+        uint32_t tag[4]; std::memcpy(tag,memory(c.tadr,1),16);
+        uint32_t qwc=tag[0]&0xffff,id=(tag[0]>>28)&7,addr=tag[1];
+        bool irq=(tag[0]>>31)&1;
+        c.chcr=(c.chcr&0xffff)|(tag[0]&0xffff0000u);               // TAG field mirrors the last tag
+        if(c.chcr&0x40) deliver(n,0,0,tag[2],tag[3],true);          // TTE: VIF transfers the tag's upper half
+        bool end=false;
+        switch(id) {
+            case 0: c.madr=addr; c.qwc=qwc; c.tadr+=16; end=true; break;          // refe
+            case 1: c.madr=c.tadr+16; c.qwc=qwc; c.tadr=c.madr+qwc*16; break;     // cnt
+            case 2: c.madr=c.tadr+16; c.qwc=qwc; c.tadr=addr; break;              // next
+            case 3: case 4: c.madr=addr; c.qwc=qwc; c.tadr+=16; break;            // ref / refs
+            case 5: {                                                             // call
+                c.madr=c.tadr+16; c.qwc=qwc;
+                uint32_t ret=c.madr+qwc*16, asp=(c.chcr>>4)&3;
+                if(asp==0) c.asr0=ret; else if(asp==1) c.asr1=ret; else { stop_reason="dma_call_stack_overflow"; throw std::runtime_error(stop_reason); }
+                c.chcr=(c.chcr&~0x30u)|((asp+1)<<4); c.tadr=addr; break;
+            }
+            case 6: {                                                             // ret
+                c.madr=c.tadr+16; c.qwc=qwc; uint32_t asp=(c.chcr>>4)&3;
+                if(asp==0) end=true;
+                else { c.tadr=asp==2?c.asr1:c.asr0; c.chcr=(c.chcr&~0x30u)|((asp-1)<<4); }
+                break;
+            }
+            case 7: c.madr=c.tadr+16; c.qwc=qwc; end=true; break;                 // end
+        }
+        return end || (irq && (c.chcr&0x80));
+    }
     const uint8_t* memory(uint32_t address,uint32_t qwords) {
         if(address&0x80000000u) {                                  // scratchpad
             auto off=address&0x3ff0u;
@@ -83,41 +153,26 @@ private:
     int start(int n) {
         auto& c=channels[n];
         uint32_t dir=c.chcr&1,mode=(c.chcr>>2)&3;
-        if(n!=2 && n!=1 && n!=0) { stop_reason="dma_channel_unsupported "+std::to_string(n); throw std::runtime_error(stop_reason); }
-        if(!dir && n!=0 && n!=1 && n!=2) { stop_reason="dma_to_memory_unsupported"; throw std::runtime_error(stop_reason); }
+        if(n==3) return pump(3);                                   // IPU_FROM: drains as output appears
+        if(capacity[n]) { chain_end[n]=false; return pumpTo(n); }    // IPU_TO: fills the FIFO as it drains
+        if(n==8) {                                                 // SPR_FROM: scratchpad (SADR) -> memory, normal mode
+            if(mode!=0) { stop_reason="dma_spr_from_mode_unsupported "+std::to_string(mode); throw std::runtime_error(stop_reason); }
+            for(uint32_t i=0;i<c.qwc;++i) {
+                std::memcpy(const_cast<uint8_t*>(memory(c.madr,1)),scratchpad+(c.sadr&0x3ff0u),16);
+                c.madr+=16; c.sadr=(c.sadr+16)&0x3ff0u;
+            }
+            qwords_transferred+=c.qwc; c.qwc=0; c.chcr&=~0x100u; return n;
+        }
+        if(n>4 && n!=9) { stop_reason="dma_channel_unsupported "+std::to_string(n); throw std::runtime_error(stop_reason); }
+        (void)dir;
         if(mode==0) {                                              // normal
             deliver(n,c.madr,c.qwc); c.madr+=c.qwc*16; c.qwc=0;
         } else if(mode==1) {                                       // source chain
-            bool tte=(c.chcr&0x40)!=0;
             for(int guard=0;guard<1000000;++guard) {
                 if(c.qwc) { deliver(n,c.madr,c.qwc); c.madr+=c.qwc*16; c.qwc=0; }
-                uint32_t tag[4]; std::memcpy(tag,memory(c.tadr,1),16);
-                uint32_t qwc=tag[0]&0xffff,id=(tag[0]>>28)&7,addr=tag[1];
-                bool irq=(tag[0]>>31)&1;
-                c.chcr=(c.chcr&0xffff)|(tag[0]&0xffff0000u);           // TAG field mirrors the last tag
-                if(tte) deliver(n,0,0,tag[2],tag[3],true);              // VIF transfers the tag's upper half
-                bool end=false;
-                switch(id) {
-                    case 0: c.madr=addr; c.qwc=qwc; c.tadr+=16; end=true; break;          // refe
-                    case 1: c.madr=c.tadr+16; c.qwc=qwc; c.tadr=c.madr+qwc*16; break;     // cnt
-                    case 2: c.madr=c.tadr+16; c.qwc=qwc; c.tadr=addr; break;              // next
-                    case 3: case 4: c.madr=addr; c.qwc=qwc; c.tadr+=16; break;            // ref / refs
-                    case 5: {                                                             // call
-                        c.madr=c.tadr+16; c.qwc=qwc;
-                        uint32_t ret=c.madr+qwc*16, asp=(c.chcr>>4)&3;
-                        if(asp==0) c.asr0=ret; else if(asp==1) c.asr1=ret; else { stop_reason="dma_call_stack_overflow"; throw std::runtime_error(stop_reason); }
-                        c.chcr=(c.chcr&~0x30u)|((asp+1)<<4); c.tadr=addr; break;
-                    }
-                    case 6: {                                                             // ret
-                        c.madr=c.tadr+16; c.qwc=qwc; uint32_t asp=(c.chcr>>4)&3;
-                        if(asp==0) end=true;
-                        else { c.tadr=asp==2?c.asr1:c.asr0; c.chcr=(c.chcr&~0x30u)|((asp-1)<<4); }
-                        break;
-                    }
-                    case 7: c.madr=c.tadr+16; c.qwc=qwc; end=true; break;                 // end
-                }
+                bool end=nextTag(n);
                 if(c.qwc) { deliver(n,c.madr,c.qwc); c.madr+=c.qwc*16; c.qwc=0; }
-                if(end || (irq && (c.chcr&0x80))) break;
+                if(end) break;
                 if(guard==999999) { stop_reason="dma_chain_runaway"; throw std::runtime_error(stop_reason); }
             }
         } else { stop_reason="dma_mode_unsupported "+std::to_string(mode); throw std::runtime_error(stop_reason); }

@@ -93,6 +93,20 @@ for a in range(0x100000,0x5b2c3c,4):
 for a in range(0x54d000,0x5c0d00,4):
     v=word(a)
     if 0x100000<=v<0x5b2c3c and v%4==0 and follows_end(v): entries.add(v)
+# Code pointers built in registers (lui rt,hi then addiu/ori rx,rt,lo within a few
+# instructions), e.g. callbacks handed to libmpeg or the kernel at run time.
+for a in range(0x100000,0x5b2c3c,4):
+    w=word(a)
+    if (w>>26)!=0x0f: continue
+    rt=(w>>16)&31; hi=(w&0xffff)<<16
+    for b in range(a+4,min(a+28,0x5b2c3c),4):
+        x=word(b); op=x>>26
+        if op in (0x09,0x0d) and ((x>>21)&31)==rt:
+            lo=x&0xffff
+            v=(hi+(lo-0x10000 if op==0x09 and lo&0x8000 else lo))&0xffffffff
+            if 0x100000<=v<0x5b2c3c and v%4==0 and follows_end(v): entries.add(v)
+            break
+        if ((x>>16)&31)==rt and op not in (0x2b,0x2a,0x2e,0x28,0x29,0x3f,0x1f) and op!=0: break   # rt overwritten
 split=0
 ordered=sorted(merged)
 for t in sorted(entries):

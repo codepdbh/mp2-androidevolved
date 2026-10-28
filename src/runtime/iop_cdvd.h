@@ -2,6 +2,7 @@
 #include "disc_image.h"
 #include "iop_sif.h"
 #include <cctype>
+#include <chrono>
 #include <ctime>
 #include <functional>
 namespace mp2r {
@@ -10,6 +11,10 @@ namespace mp2r {
 // synchronously: sector data goes straight to EE RAM, so no unaligned remainder is reported.
 // Packet layouts: PS2SDK common/include/libcdvd-rpc.h (protocol-compatible definitions).
 // stream: forwards NCMD 9/10 to the cdrom_stm0: devctl of CDVDSTM (cmd, packet) -> retres.
+// Time a DVD drive at 4x CAV (about 5.54 MB/s) needs to deliver `sectors` 2048-byte sectors.
+inline std::chrono::nanoseconds discTransferTime(uint32_t sectors) {
+    return std::chrono::nanoseconds(uint64_t(sectors)*2048ull*1000000000ull/5540000ull);
+}
 inline void registerCdvdServices(IopSif& iop,DiscImage* disc,std::function<int32_t(uint32_t cmd,uint32_t packet,uint32_t size)> stream={}) {
     constexpr uint32_t version=0x0223;
     auto ee=[&iop](uint32_t address){ return iop.eeMemory()+(address&0x1ffffff); };
@@ -51,6 +56,7 @@ inline void registerCdvdServices(IopSif& iop,DiscImage* disc,std::function<int32
                 for(uint32_t i=0;i<count;++i) disc->read(lbn+i,ee(dest+i*2048));
                 if(uint32_t align=sif.read32(buffer+16)) std::memset(ee(align),0,16); // no unaligned remainder
                 if(uint32_t pos=sif.read32(buffer+20)) put(pos,count*2048);
+                sif.reply_latency=discTransferTime(count);
                 sif.write32(buffer,1); return buffer;
             }
             case 0x05: case 0x06: case 0x07: case 0x08:    // Seek / Standby / Stop / Pause
@@ -58,7 +64,12 @@ inline void registerCdvdServices(IopSif& iop,DiscImage* disc,std::function<int32
             case 0x0e: sif.write32(buffer,2); return buffer;  // DiskReady
             case 0x09: case 0x0a:                          // Stream / CddaStream -> devctl("cdrom_stm0:", 0x4396/0x4398)
                 if(!stream) { sif.stop_reason="cdvd_stream_without_cdvdstm"; return 0; }
-                sif.write32(buffer,uint32_t(stream(function==9?0x4396:0x4398,buffer,size))); return buffer;
+                {
+                    uint32_t r=uint32_t(stream(function==9?0x4396:0x4398,buffer,size));
+                    if(sif.read32(buffer+12)==2) sif.reply_latency=discTransferTime(r&0xffff);   // stream READ
+                    sif.write32(buffer,r);
+                }
+                return buffer;
             default: sif.stop_reason="cdvd_ncmd_unsupported fno="+std::to_string(function); return 0;
         }
     },"CDVDFSV");

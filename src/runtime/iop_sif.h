@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 #include <cstdint>
@@ -37,7 +38,7 @@ private:
     uint32_t ee_packet_buffer_{};
     uint32_t heap_=0x00020000;
     std::map<uint32_t,Server> servers_;
-    struct Outgoing { std::vector<uint8_t> packet; uint32_t data_dest{}; std::vector<uint8_t> data; };
+    struct Outgoing { std::vector<uint8_t> packet; uint32_t data_dest{}; std::vector<uint8_t> data; std::chrono::steady_clock::time_point due{}; };
     std::deque<Outgoing> sif0_;
     bool sif0_busy_{},reboot_pending_{};
     uint32_t next_transfer_=1;
@@ -131,8 +132,11 @@ public:
     }
     // SifSetDChain (0x78): the EE handler consumed the previous SIF0 packet.
     void setDChain(uint8_t* ee,uint32_t& dmac_stat) { sif0_busy_=false; pump(ee,dmac_stat); }
+    // Device latency for the reply of the RPC being handled (e.g. disc reads); 0 = immediate.
+    std::chrono::nanoseconds reply_latency{};
     void pump(uint8_t* ee,uint32_t& dmac_stat) {
         if(sif0_busy_ || sif0_.empty() || !ee_packet_buffer_) return;
+        if(sif0_.front().due>std::chrono::steady_clock::now()) return;   // the device has not finished yet
         auto out=std::move(sif0_.front()); sif0_.pop_front();
         if(!out.data.empty()) std::memcpy(ee+(out.data_dest&0x1ffffff),out.data.data(),out.data.size());
         std::memcpy(ee+(ee_packet_buffer_&0x1ffffff),out.packet.data(),out.packet.size());
@@ -191,9 +195,11 @@ private:
                     auto ticket=next_ticket_++; pending_calls_[ticket]=state;
                     server->async(fno,server->buffer,ssize,ticket); return;
                 }
+                reply_latency={};
                 uint32_t reply=server->handler(*this,int(fno),server->buffer,ssize);
                 if(!stop_reason.empty()) return;
                 finishCall(state,reply);
+                if(reply_latency.count() && !sif0_.empty()) sif0_.back().due=std::chrono::steady_clock::now()+reply_latency;
                 return;
             }
             case 0x8000000c: {                                                      // RPC_RDATA

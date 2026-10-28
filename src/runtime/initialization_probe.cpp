@@ -88,6 +88,17 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
         }
         log<<'\n';
     }
+    host.iop_kernel.dumpState(log);
+    log<<"IPU commands="<<host.ipu.commands<<" macroblocks="<<host.ipu.macroblocks<<" GIF tags="<<host.gif.tags<<" GS image bytes="<<host.gs_image_bytes
+       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" interrupts="<<host.interrupts_delivered<<"\n";
+    {
+        const auto& d4=host.dmac.channels[4]; const auto& d3=host.dmac.channels[3];
+        log<<std::hex<<"IPU ctrl=0x"<<host.ipu.readCtrl()<<" bp=0x"<<host.ipu.readBp()<<" cmd=0x"<<host.ipu.readCmd()<<" queued="<<std::dec<<host.ipu.queuedQwords()
+           <<" out="<<host.ipu.output.size()<<std::hex<<" D4 chcr=0x"<<d4.chcr<<" madr=0x"<<d4.madr<<" qwc=0x"<<d4.qwc<<" tadr=0x"<<d4.tadr
+           <<" D3 chcr=0x"<<d3.chcr<<" madr=0x"<<d3.madr<<" qwc=0x"<<d3.qwc<<" dstat=0x"<<host.dmac_stat<<std::dec<<'\n';
+        for(std::size_t i=1;i<=host.ipu_recent.size();++i)
+            if(auto& r=host.ipu_recent[(host.ipu_log+i)%host.ipu_recent.size()]; !r.empty() && i+8>host.ipu_recent.size()) log<<"recent "<<r<<'\n';
+    }
     log<<"threads="<<host.threads.size()<<" switches="<<host.context_switches<<" semaphore_waits="<<host.semaphore_waits<<'\n';
     if(host.context_switches==2 && host.semaphore_waits==1 && host.threads.current()==1) {
         const auto* helper=host.threads.get(2);

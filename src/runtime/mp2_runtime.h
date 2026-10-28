@@ -20,11 +20,13 @@
 #include "ee_dmac.h"
 #include "gs_gif.h"
 #include "ee_vif.h"
+#include "ee_ipu.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <cstdlib>
 #include "kernel_syscall_table.h"
 #include "ps2_syscalls.h"
 #include "ps2_stubs.h"
@@ -165,6 +167,18 @@ public:
     mp2r::EeDmac dmac=[this]{
         mp2r::EeDmac d;
         d.sinks[2]=[this](const uint8_t* q,uint32_t n,uint32_t,uint32_t,bool has_tag){ if(!has_tag) gif.feed(q,n); };
+        d.sinks[4]=[this](const uint8_t* q,uint32_t count,uint32_t,uint32_t,bool has_tag){ if(!has_tag) ipu.inputBytes(q,count*16); };
+        d.capacity[4]=[this]{ return ipu.inputRoom(); };
+        d.sinks[9]=[this](const uint8_t* q,uint32_t count,uint32_t,uint32_t,bool has_tag){     // SPR_TO: memory -> scratchpad (SADR)
+            if(has_tag) return;
+            auto& c=dmac.channels[9];
+            for(uint32_t i=0;i<count;++i) { std::memcpy(special.scratchpad()+(c.sadr&0x3ff0u),q+i*16,16); c.sadr=(c.sadr+16)&0x3ff0u; }
+        };
+        d.sources[3]=[this](uint8_t* dst,uint32_t max){
+            uint32_t n=std::min<uint32_t>(max,uint32_t(ipu.output.size()/16));
+            if(n) { std::memcpy(dst,ipu.output.data(),n*16); ipu.output.erase(ipu.output.begin(),ipu.output.begin()+n*16); }
+            return n;
+        };
         for(int n:{0,1}) d.sinks[n]=[this,n](const uint8_t* q,uint32_t count,uint32_t lo,uint32_t hi,bool has_tag){
             auto& vif=n?vif1:vif0;
             if(has_tag) { uint32_t w[2]={lo,hi}; vif.feed(reinterpret_cast<const uint8_t*>(w),2); }
@@ -188,6 +202,7 @@ public:
     bool fifoWrite(R5900Context* cpu,uint32_t address,const uint8_t* q) {
         auto p=address&0x1fffffffu;
         if(p==0x10006000u) { gif.feed(q,1); }
+        else if(p==0x10007010u) { ipu.inputBytes(q,16); afterIpu(cpu); return true; }
         else if(p==0x10005000u || p==0x10004000u) {
             auto& vif=p==0x10005000u?vif1:vif0; vif.feed(q,4);
             if(!vif.stop_reason.empty()) { reason=(p==0x10005000u?"vif1: ":"vif0: ")+vif.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
@@ -222,6 +237,55 @@ public:
         }
         if(p==0x10003000u && (v&1)) { for(uint32_t r=0x10003000u;r<0x10003100u;r+=0x10) unit_registers.erase(r); return; } // GIF_CTRL.RST
         unit_registers[p]=v;
+    }
+    // IPU: registers 0x10002000 CMD, 0x10002010 CTRL, 0x10002020 BP, 0x10002030 TOP; FIFOs out 0x10007000 / in 0x10007010.
+    mp2r::EeIpu ipu;
+    unsigned ipu_log{},ipu_reads{},ipu_ctrl_log{};
+    std::array<std::string,48> ipu_recent;
+    // MP2R_TRACE_FROM_IPU=N logs the 3000 guest branches that follow the Nth IPU command.
+    unsigned trace_ipu_from=[]{ const char* v=std::getenv("MP2R_TRACE_FROM_IPU"); return v?unsigned(std::atoi(v)):0u; }(),trace_branches{};
+    static bool ipuRegister(uint32_t a) { auto p=a&0x1fffffffu; return p>=0x10002000u && p<0x10002040u; }
+    uint64_t ipuRead(uint32_t a) {
+        if(trace_branches && ++ipu_reads<=200) {
+            uint64_t v=ipuReadRaw(a);
+            log<<"IPU read 0x"<<std::hex<<(a&0x1fffffffu)<<" = 0x"<<v<<std::dec<<'\n';
+            return v;
+        }
+        return ipuReadRaw(a);
+    }
+    uint64_t ipuReadRaw(uint32_t a) {
+        switch((a&0x1fffffffu)&~7u) {
+            case 0x10002000u: return ipu.readCmd();
+            case 0x10002010u: return ipu.readCtrl();
+            case 0x10002020u: return ipu.readBp();
+            case 0x10002030u: return ipu.readTop();
+        }
+        return 0;
+    }
+    void ipuWrite(R5900Context* cpu,uint32_t a,uint64_t v) {
+        auto p=a&0x1fffffffu;
+        if(p==0x10002000u) {
+            ipu.command(uint32_t(v));
+            if(trace_ipu_from && ipu_log+1==trace_ipu_from) trace_branches=3000;
+            std::ostringstream line;
+            line<<"IPU cmd 0x"<<std::hex<<uint32_t(v)<<" pc=0x"<<cpu->pc<<" ra=0x"<<GPR_U32(cpu,31)<<" irq="<<bool(interrupt)<<" ctrl=0x"<<ipu.readCtrl()<<" busy="<<ipu.busy<<" data=0x"<<ipu.cmd_data
+                <<" top=0x"<<ipu.top<<std::dec<<" out="<<ipu.output.size()<<" ch3qwc="<<dmac.channels[3].qwc<<" in="<<ipu.input_total<<" next="<<ipu.peekHex(8);
+            if(++ipu_log<=400) log<<line.str()<<'\n';
+            ipu_recent[ipu_log%ipu_recent.size()]=line.str();
+            if(!ipu.stop_reason.empty())
+                for(std::size_t i=1;i<=ipu_recent.size();++i) if(auto& r=ipu_recent[(ipu_log+i)%ipu_recent.size()]; !r.empty()) log<<"recent "<<r<<'\n';
+        }
+        else if(p==0x10002010u) { if(++ipu_ctrl_log<=40) log<<"IPU ctrl write 0x"<<std::hex<<uint32_t(v)<<" pc=0x"<<cpu->pc<<" ra=0x"<<GPR_U32(cpu,31)<<std::dec<<'\n'; ipu.writeCtrl(uint32_t(v)); }
+        afterIpu(cpu);
+    }
+    void afterIpu(R5900Context* cpu) {
+        if(!ipu.stop_reason.empty()) { reason=ipu.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
+        for(;;) {                                              // IPU_TO refills the FIFO as commands consume it
+            uint32_t before=dmac.channels[4].qwc,madr=dmac.channels[4].madr;
+            if(dmac.pumpTo(4)==4) { dmac_stat|=1u<<4; break; }
+            if(dmac.channels[4].qwc==before && dmac.channels[4].madr==madr) break;
+        }
+        if(dmac.pump(3)==3) dmac_stat|=1u<<3;                  // IPU_FROM completed with fresh output
     }
     std::array<uint64_t,0x64> gs_regs{};
     uint64_t gs_writes{},gs_image_bytes{};
@@ -348,6 +412,10 @@ public:
         mp2r::registerCdvdServices(iop,disc?&*disc:nullptr,[this](uint32_t cmd,uint32_t packet,uint32_t size) -> int32_t {
             std::vector<uint8_t> in(size),out(4);
             std::memcpy(in.data(),iop.ram(packet,size),size);
+            if(++stream_packets<=12 && size>=20) {
+                uint32_t w[5]; std::memcpy(w,in.data(),20);
+                log<<"CD stream packet lbn="<<w[0]<<" sectors="<<w[1]<<" buf=0x"<<std::hex<<w[2]<<std::dec<<" cmd="<<w[3]<<" mode=0x"<<std::hex<<w[4]<<std::dec<<" size="<<size<<'\n';
+            }
             auto r=iop_kernel.deviceControl("cdrom_stm",cmd,in,out);
             if(!r) { iop.stop_reason="cdvd_stream_device_missing"; return 0; }
             if(!iop_kernel.stop_reason.empty()) iop.stop_reason=iop_kernel.stop_reason;
@@ -360,6 +428,7 @@ public:
         fileio.install(iop);
     }
     mp2r::IopFileio fileio;
+    unsigned stream_packets{};
     // "cdrom0:\DIR\FILE;1" -> extracted file, matching ISO9660 names case-insensitively.
     std::optional<std::filesystem::path> resolveDiscPath(const std::string& path) {
         if(!disc || path.rfind("cdrom0:",0)!=0) return std::nullopt;
@@ -431,6 +500,7 @@ public:
     bool dispatchGuestBranch(uint8_t*,R5900Context* cpu,uint32_t target,uint32_t from,
                              uint32_t,GuestBranchKind,const char*) {
         recent_branches[dispatches%recent_branches.size()]={from,target};
+        if(trace_branches) { --trace_branches; log<<"T 0x"<<std::hex<<from<<"->0x"<<target<<std::dec<<'\n'; }
         ++dispatches; source=from;
         if(dispatches<=64) log<<"branch 0x"<<std::hex<<from<<" -> 0x"<<target<<std::dec<<'\n';
         cpu->pc=target;
@@ -673,6 +743,7 @@ public:
     }
     uint64_t Load64(uint8_t*,R5900Context* cpu,uint32_t a) {
         if(gsPrivileged(a)) return gsRead(a);
+        if(ipuRegister(a)) return ipuRead(a);
         return loadSpecial<uint64_t>(cpu,a,"unsupported_mmio_read64");
     }
     static bool ioRegister(uint32_t a) { auto p=a&0x1fffffffu; return p>=0x10000000u && p<0x10010000u; }
@@ -682,7 +753,14 @@ public:
         return loadSpecial<uint16_t>(cpu,a,"unsupported_mmio_read16");
     }
     uint8_t Load8(uint8_t*,R5900Context* cpu,uint32_t a) { return loadSpecial<uint8_t>(cpu,a,"unsupported_mmio_read8"); }
-    __m128i Load128(uint8_t*,R5900Context* cpu,uint32_t a) { return loadSpecial<__m128i>(cpu,a&~15u,"unsupported_mmio_read128"); }
+    __m128i Load128(uint8_t*,R5900Context* cpu,uint32_t a) {
+        if(((a&0x1fffffffu)&~15u)==0x10007000u) {             // IPU output FIFO
+            __m128i v=_mm_setzero_si128();
+            if(ipu.output.size()>=16) { std::memcpy(&v,ipu.output.data(),16); ipu.output.erase(ipu.output.begin(),ipu.output.begin()+16); }
+            return v;
+        }
+        return loadSpecial<__m128i>(cpu,a&~15u,"unsupported_mmio_read128");
+    }
     void Store8(uint8_t*,R5900Context* cpu,uint32_t a,uint8_t v) { storeSpecial(cpu,a,v,"unsupported_mmio_write8"); }
     void Store16(uint8_t* ram,R5900Context* cpu,uint32_t a,uint16_t v) {
         if(ioRegister(a) && !(a&2)) { Store32(ram,cpu,a,v); return; }
@@ -690,6 +768,7 @@ public:
     }
     void Store64(uint8_t*,R5900Context* cpu,uint32_t a,uint64_t v) {
         if(gsPrivileged(a)) { gsWrite(a,v); return; }
+        if(ipuRegister(a)) { ipuWrite(cpu,a,v); return; }
         storeSpecial(cpu,a,v,"unsupported_mmio_write64");
     }
     void Store128(uint8_t*,R5900Context* cpu,uint32_t a,__m128i v) {
@@ -715,6 +794,7 @@ public:
         if(sifChannelRegister(address)) return sif_channel_registers[address&0x1fffffffu];
         if(dmac.owns(address)) return dmac.read(address);
         if(unitRegister(address)) return unitRead(address);
+        if(ipuRegister(address)) return uint32_t(ipuRead(address)>>((address&4)*8));
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) return iop.getReg(((p-0x1000f200u)>>4)+1);
         if(gsPrivileged(address)) return uint32_t(gsRead(address&~7u)>>((address&4)*8));
         if((address&0x1fffffff)==0x1000f000) return intc.status();
@@ -732,6 +812,7 @@ public:
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) { iop.setReg(((p-0x1000f200u)>>4)+1,value); return; }
         if(sifChannelRegister(address)) { sif_channel_registers[address&0x1fffffffu]=value; return; }
         if(unitRegister(address)) { unitWrite(address,value); return; }
+        if(ipuRegister(address)) { if(!(address&4)) ipuWrite(cpu,address,value); return; }
         if(dmac.owns(address)) {
             dmac.ram=guest_ram; dmac.scratchpad=special.scratchpad();
             int done=-1;
@@ -739,6 +820,7 @@ public:
             catch(const std::exception&) { reason=dmac.stop_reason.empty()?"dma_error":dmac.stop_reason; memory_address=address; blocked_source=cpu->pc; throw MemoryStop{}; }
             if(!gif.stop_reason.empty()) { reason=gif.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
             if(done>=0) dmac_stat|=1u<<done;                   // channel interrupt status (INT1 when unmasked)
+            afterIpu(cpu);                                     // IPU input may have produced output for channel 3
             return;
         }
         if((address&0x1fffffff)==0x1000e010) { dmac_stat=(dmac_stat&~(value&0x3ffu))^(value&0x3ff0000u); return; }

@@ -2,6 +2,7 @@
 #include "iop_cpu.h"
 #include "iop_sif.h"
 #include "disc_image.h"
+#include <algorithm>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -31,6 +32,8 @@ public:
     struct Sema { int count{},max{}; uint32_t attr{},option{}; };
     struct EventFlag { uint32_t bits{},attr{},option{},initial{}; };
     struct RpcServer { uint32_t sd,sid,func,buf,queue; };
+    struct Alarm { std::chrono::steady_clock::time_point due; uint32_t handler,arg; };
+    std::vector<Alarm> alarms;
     struct PendingCall { uint32_t sd,fno,buf,size; uint64_t ticket; };
 
     IopSif& sif;
@@ -43,6 +46,7 @@ public:
     DiscImage* disc{};
     uint64_t cd_reads{};
     int cd_stream_flag{},cd_intr_event{};
+    unsigned cd_trace{},cd_sc_trace{};
     std::array<uint32_t,2> cd_stm_callback{};
     std::vector<uint32_t> cd_pending_callbacks;
     bool cd_in_callback{};
@@ -156,6 +160,34 @@ public:
             --budget;
         }
     }
+    // Diagnostics: threads with state/wait/pc, kernel objects and alarms.
+    void dumpState(std::ostream& out) const {
+        static const char* states[]={"dormant","ready","waiting"};
+        static const char* waits[]={"-","sema","event","sleep","delay","rpcloop","vblank"};
+        out<<"IOP threads (current "<<current_<<"):\n";
+        for(const auto& [id,t]:threads_)
+            out<<"  #"<<id<<" prio="<<t.priority<<' '<<states[int(t.state)]<<" wait="<<waits[int(t.wait)]<<" id="<<t.wait_id
+               <<" pc=0x"<<std::hex<<t.pc<<" entry=0x"<<t.entry<<std::dec<<'\n';
+        for(const auto& [id,e]:events_) out<<"  event #"<<id<<" bits=0x"<<std::hex<<e.bits<<std::dec<<'\n';
+        for(const auto& [id,s]:semas_) out<<"  sema #"<<id<<" count="<<s.count<<'\n';
+        out<<"  alarms="<<alarms.size()<<" pending rpc calls="<<calls_.size()<<(active_call_?" (one active)":"")<<'\n';
+    }
+    // Drive command completion: with streaming active, cdvdman's interrupt handler calls the
+    // streaming module's callback (flag 1 -> stm0, 2 -> stm1). Callbacks that start a new command
+    // are queued so completions do not nest.
+    void cdCommandComplete() {
+        uint32_t cb=cd_stream_flag==1?cd_stm_callback[0]:cd_stream_flag==2?cd_stm_callback[1]:0;
+        if(!cb) return;
+        cd_pending_callbacks.push_back(cb);
+        if(cd_in_callback) return;
+        cd_in_callback=true;
+        uint32_t saved_v0=cpu.r[2];
+        while(!cd_pending_callbacks.empty() && stop_reason.empty()) {
+            uint32_t next=cd_pending_callbacks.front(); cd_pending_callbacks.erase(cd_pending_callbacks.begin());
+            callGuest(next,{1});
+        }
+        cd_in_callback=false; cpu.r[2]=saved_v0;
+    }
     // Video timing shared with the EE: wakes threads in WaitVblankStart (id 0) / WaitVblankEnd (id 1).
     void signalVblank(bool start) {
         for(auto& [id,t]:threads_)
@@ -169,7 +201,9 @@ public:
         auto it=devices.find(device); if(it==devices.end()) return std::nullopt;
         uint32_t ops=read(it->second+16,4),devctl=read(ops+23*4,4);
         if(!devctl) return std::nullopt;
-        uint32_t scratch=sif.allocate(0x40+uint32_t(in.size())+uint32_t(out.size()));
+        if(in.size()+out.size()>0x3c0) { stop("iop_devctl_buffer_too_large"); return 0; }
+        if(!devctl_scratch_) devctl_scratch_=sif.allocate(0x400);                  // reused across calls
+        uint32_t scratch=devctl_scratch_;
         uint32_t file=scratch,name=scratch+0x10,arg=scratch+0x40,buf=arg+uint32_t(in.size());
         write(file,0,4); write(file+4,0,4); write(file+8,it->second,4); write(file+12,0,4);   // mode, unit 0, device, privdata
         write(name,0,1);
@@ -181,8 +215,8 @@ public:
     // IOP reboot: every module, thread and kernel object disappears.
     void reset() {
         stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
-        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear();
-        active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; loaded.clear();
+        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); alarms.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear();
+        active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; devctl_scratch_=0; loaded.clear();
         sif.user_command=nullptr;
     }
     bool idle() const {
@@ -205,7 +239,7 @@ private:
     std::optional<PendingCall> active_call_;
     std::optional<Thread> rpc_saved_;
     int next_id_=1,current_{}; uint64_t order_{}; int nested_{};
-    uint32_t call_stack_{};
+    uint32_t call_stack_{},devctl_scratch_{};
     struct Snapshot { std::array<uint32_t,32> r; uint32_t pc,next_pc,hi,lo; };
     Snapshot snapshot() const { return {cpu.r,cpu.pc,cpu.next_pc,cpu.hi,cpu.lo}; }
     void restore(const Snapshot& s) { cpu.r=s.r; cpu.pc=s.pc; cpu.next_pc=s.next_pc; cpu.hi=s.hi; cpu.lo=s.lo; }
@@ -262,7 +296,19 @@ private:
             cur.state=State::Ready; cur.order=++order_; save(cur); cur.pc=cpu.r[31]; current_=0; return;
         }
     }
+    // Fires due alarms in interrupt context; a non-zero return re-arms with that many ticks.
+    void fireAlarms() {
+        if(nested_ || alarms.empty()) return;
+        auto now=std::chrono::steady_clock::now();
+        for(size_t i=0;i<alarms.size() && stop_reason.empty();) {
+            if(alarms[i].due>now) { ++i; continue; }
+            auto a=alarms[i]; alarms.erase(alarms.begin()+long(i));
+            uint32_t next=callGuest(a.handler,{a.arg});
+            if(next) alarms.push_back({now+std::chrono::nanoseconds(uint64_t(next)*1000000/36864),a.handler,a.arg});
+        }
+    }
     void wakeDelayed() {
+        fireAlarms();
         auto now=std::chrono::steady_clock::now();
         for(auto& [id,t]:threads_) if(t.state==State::Waiting && t.wait==Wait::Delay && now>=t.wake_at) ready(t,0);
     }
@@ -487,6 +533,20 @@ inline void IopKernel::installCore() {
         k.ret(0);
     });
     add("ioman",21,[](IopKernel& k){ k.ret(k.devices.erase(k.sif.readString(k.arg(0),32))?0:uint32_t(-1)); });
+    // Alarms: SetAlarm(35)/iSetAlarm(36)(iop_sys_clock_t* delay, handler(arg) -> next delay or 0, arg),
+    // CancelAlarm(37)/iCancelAlarm(38)(handler, arg). Clock: 36.864 MHz system ticks.
+    auto set_alarm=[](IopKernel& k){
+        uint64_t ticks=k.read(k.arg(0),4)|uint64_t(k.read(k.arg(0)+4,4))<<32;
+        k.alarms.push_back({std::chrono::steady_clock::now()+std::chrono::nanoseconds(ticks*1000000/36864),k.arg(1),k.arg(2)});
+        k.ret(0);
+    };
+    add("thbase",35,set_alarm); add("thbase",36,set_alarm);
+    auto cancel_alarm=[](IopKernel& k){
+        auto before=k.alarms.size();
+        k.alarms.erase(std::remove_if(k.alarms.begin(),k.alarms.end(),[&](const Alarm& a){ return a.handler==k.arg(0) && a.arg==k.arg(1); }),k.alarms.end());
+        k.ret(k.alarms.size()<before?0:uint32_t(-105));   // KE_NOEXIST_ALARM
+    };
+    add("thbase",37,cancel_alarm); add("thbase",38,cancel_alarm);
     // vblank: WaitVblankStart(4), WaitVblankEnd(5), WaitVblank(6: in blank or next start), WaitNonVblank(7).
     add("vblank",4,[](IopKernel& k){ k.ret(0); k.block(Wait::Vblank,0); });
     add("vblank",5,[](IopKernel& k){ k.ret(0); k.block(Wait::Vblank,1); });
@@ -496,33 +556,25 @@ inline void IopKernel::installCore() {
     add("cdvdman",6,[](IopKernel& k){
         if(!k.disc) { k.stop("iop_cd_without_disc"); return; }
         uint32_t lbn=k.arg(0),count=k.arg(1),buf=k.arg(2);
+        if(k.log && ++k.cd_trace<=40) *k.log<<"IOP sceCdRead lbn="<<lbn<<" count="<<count<<" buf=0x"<<std::hex<<buf<<" mode=0x"<<k.read(k.arg(3),4)<<std::dec<<" flag="<<k.cd_stream_flag<<'\n';
         for(uint32_t i=0;i<count;++i) k.disc->read(lbn+i,k.sif.ram(buf+i*2048,2048));
         k.cd_reads+=count; k.ret(1);
-        // Read completion: cdvdman notifies the streaming module (stream flag 1 -> stm0, 2 -> stm1).
-        uint32_t cb=k.cd_stream_flag==1?k.cd_stm_callback[0]:k.cd_stream_flag==2?k.cd_stm_callback[1]:0;
-        if(!cb) return;
-        k.cd_pending_callbacks.push_back(cb);
-        if(k.cd_in_callback) return;                       // a callback started this read: run after it
-        k.cd_in_callback=true;
-        uint32_t saved_v0=k.cpu.r[2];
-        while(!k.cd_pending_callbacks.empty() && k.stop_reason.empty()) {
-            uint32_t next=k.cd_pending_callbacks.front(); k.cd_pending_callbacks.erase(k.cd_pending_callbacks.begin());
-            k.callGuest(next,{1});
-        }
-        k.cd_in_callback=false; k.cpu.r[2]=saved_v0;
+        k.cdCommandComplete();
     });
     add("cdvdman",48,[](IopKernel& k){ k.cd_stm_callback[0]=k.arg(0); k.ret(0); });   // sceCdstm0Cb
     add("cdvdman",49,[](IopKernel& k){ k.cd_stm_callback[1]=k.arg(0); k.ret(0); });   // sceCdstm1Cb
     add("cdvdman",39,[](IopKernel& k){ k.ret(1); });                                  // sceCdBreak: nothing pending
-    add("cdvdman",46,[](IopKernel& k){ k.ret(1); });                                  // sceCdNop
+    add("cdvdman",46,[](IopKernel& k){ k.ret(1); k.cdCommandComplete(); });          // sceCdNop: drive NOP command
     add("cdvdman",61,[](IopKernel& k){ k.ret(1); });                                  // sceCdStStop
-    add("cdvdman",114,[](IopKernel& k){ k.ret(0); });                                 // _retzero
+    // Export 114 of the IOPRP280 cdvdman 2.35 is a sector read with sceCdRead's signature (used by CDVDSTM).
+    hle[{"cdvdman",114}]=hle[{"cdvdman",6}];
     add("cdvdman",8,[](IopKernel& k){ k.ret(0); });      // sceCdGetError: SCECdErNO
     add("cdvdman",11,[](IopKernel& k){ k.ret(0); });     // sceCdSync: no command in progress
     add("cdvdman",12,[](IopKernel& k){ k.ret(0x14); });  // sceCdGetDiskType: SCECdPS2DVD
     add("cdvdman",13,[](IopKernel& k){ k.ret(2); });     // sceCdDiskReady: SCECdComplete
     add("cdvdman",50,[](IopKernel& k){                    // sceCdSC (system control), cdvdman 2.35 semantics
         int32_t code=int32_t(k.arg(0)); uint32_t param=k.arg(1);
+        if(k.log && ++k.cd_sc_trace<=10) *k.log<<"IOP sceCdSC "<<code<<'\n';
         if(code>=-1 && code<=2) {                          // stream flag; *param = last error
             if(param) k.write(param,0,4);
             if(code!=-1) k.cd_stream_flag=code;
@@ -535,6 +587,9 @@ inline void IopKernel::installCore() {
             k.ret(uint32_t(k.cd_intr_event)); return;
         }
         if(code==-8) { k.ret(1); return; }                // 0xFFFFFFF8: spin control
+        if(code==-17) { k.ret(5000); return; }            // 0xFFFFFFEF: stream timeout (cdvdman default, ms)
+        if(code==-15) { k.ret(15000); return; }           // 0xFFFFFFF1: sync timeout (cdvdman default, ms)
+        if(code==-18) { k.ret(0); return; }               // 0xFFFFFFEE: last-read timeout set (reads never time out here)
         k.stop("iop_cdsc_unsupported "+std::to_string(code));
     });
     (void)k;
