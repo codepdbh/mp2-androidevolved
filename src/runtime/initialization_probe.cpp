@@ -3,6 +3,8 @@
 #include <thread>
 #include <cstdlib>
 #include <fstream>
+#include <deque>
+#include <sstream>
 
 namespace mp2r {
 namespace {
@@ -38,8 +40,27 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); host.registerGuestFunctions();
     host.boot_path=boot_path; host.guest_ram=ram.data();
     if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); host.iop_kernel.disc=&*host.disc; host.registerIopServices(); }
+    // Diagnostics: MP2R_WATCH=<hex addr> with MP2R_WATCH_VALUE=<hex> reports, between executor steps,
+    // the first time that RAM word takes the value (pc and recent branches).
+    uint32_t watch=[]{ const char* v=std::getenv("MP2R_WATCH"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
+    std::deque<std::string> watch_log;
+    uint32_t watch_value=[]{ const char* v=std::getenv("MP2R_WATCH_VALUE"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
     try {
         while(!host.blocked && host.executions<max_executions) {
+            if(watch && !std::getenv("MP2R_WATCH_VALUE")) {                      // every change, last 60 kept
+                uint32_t now=MP2InitializationRuntime::readWord(ram.data(),watch);
+                if(now!=watch_value) {
+                    std::ostringstream line; line<<std::hex<<"watch 0x"<<watch<<": 0x"<<watch_value<<" -> 0x"<<now<<" pc=0x"<<cpu.pc<<" sp=0x"<<GPR_U32((&cpu),29)<<" last=0x"
+                        <<host.recent_branches[(host.dispatches+host.recent_branches.size()-1)%host.recent_branches.size()].first<<"->0x"
+                        <<host.recent_branches[(host.dispatches+host.recent_branches.size()-1)%host.recent_branches.size()].second;
+                    watch_log.push_back(line.str()); if(watch_log.size()>60) watch_log.pop_front();
+                    watch_value=now;
+                }
+            } else if(watch && MP2InitializationRuntime::readWord(ram.data(),watch)==watch_value) {
+                log<<"watch 0x"<<std::hex<<watch<<" = 0x"<<watch_value<<" at pc=0x"<<cpu.pc<<" irq="<<bool(host.interrupt)<<" recent:";
+                for(unsigned i=0;i<16;++i) { const auto& b=host.recent_branches[(host.dispatches+host.recent_branches.size()-16+i)%host.recent_branches.size()]; log<<" 0x"<<b.first<<"->0x"<<b.second; }
+                log<<std::dec<<'\n'; watch=0;
+            }
             host.clockTimers();
             if(host.checkpoints>=max_checkpoints) { host.reason="checkpoint_budget"; break; }
             if(cpu.pc==MP2InitializationRuntime::interrupt_return && host.interrupt) { host.finishHandler(&cpu); continue; }
@@ -78,6 +99,11 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
         out.write(reinterpret_cast<const char*>(ram.data()),std::streamsize(ram.size()));
         out.write(reinterpret_cast<const char*>(&cpu),sizeof cpu);
     }
+    for(const auto& w:watch_log) log<<w<<'\n';
+    if(const char* dump=std::getenv("MP2R_DUMP_IOP")) {                       // IOP RAM (private data)
+        std::ofstream out(dump,std::ios::binary);
+        out.write(reinterpret_cast<const char*>(host.iop.ram(0,mp2r::IopSif::ram_size)),std::streamsize(mp2r::IopSif::ram_size));
+    }
     log<<"stop reason="<<host.reason<<" pc=0x"<<std::hex<<cpu.pc<<" source=0x"<<host.blocked_source
        <<" address=0x"<<host.memory_address<<std::dec<<" steps="<<host.executions<<" dispatches="<<host.dispatches<<" semaphores="<<host.semaphores.size()<<'\n';
     if(host.dispatches>64) {
@@ -90,7 +116,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     }
     host.iop_kernel.dumpState(log);
     log<<"IPU commands="<<host.ipu.commands<<" macroblocks="<<host.ipu.macroblocks<<" GIF tags="<<host.gif.tags<<" GS image bytes="<<host.gs_image_bytes
-       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" interrupts="<<host.interrupts_delivered<<"\n";
+       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" VU1 programs="<<host.vu1.programs<<" XGKICKs="<<host.xgkicks<<" interrupts="<<host.interrupts_delivered<<"\n";
     {
         const auto& d4=host.dmac.channels[4]; const auto& d3=host.dmac.channels[3];
         log<<std::hex<<"IPU ctrl=0x"<<host.ipu.readCtrl()<<" bp=0x"<<host.ipu.readBp()<<" cmd=0x"<<host.ipu.readCmd()<<" queued="<<std::dec<<host.ipu.queuedQwords()
@@ -98,6 +124,11 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
            <<" D3 chcr=0x"<<d3.chcr<<" madr=0x"<<d3.madr<<" qwc=0x"<<d3.qwc<<" dstat=0x"<<host.dmac_stat<<std::dec<<'\n';
         for(std::size_t i=1;i<=host.ipu_recent.size();++i)
             if(auto& r=host.ipu_recent[(host.ipu_log+i)%host.ipu_recent.size()]; !r.empty() && i+8>host.ipu_recent.size()) log<<"recent "<<r<<'\n';
+    }
+    for(int id=1;id<256;++id) if(const auto* t=host.threads.get(id)) {
+        auto it=host.thread_contexts.find(id);
+        log<<"EE thread #"<<id<<" prio="<<t->descriptor.priority<<" state="<<int(t->state)<<" wait="<<int(t->wait)<<" id="<<t->wait_id
+           <<std::hex<<" entry=0x"<<t->descriptor.entry<<" pc=0x"<<(id==host.threads.current()?cpu.pc:it!=host.thread_contexts.end()?it->second.cpu.pc:0)<<std::dec<<'\n';
     }
     log<<"threads="<<host.threads.size()<<" switches="<<host.context_switches<<" semaphore_waits="<<host.semaphore_waits<<'\n';
     if(host.context_switches==2 && host.semaphore_waits==1 && host.threads.current()==1) {

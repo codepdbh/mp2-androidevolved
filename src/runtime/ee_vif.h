@@ -19,6 +19,8 @@ public:
     std::function<void(const uint8_t* qwords,uint32_t count)> direct;    // PATH2 GIF data
     std::function<bool(uint32_t address)> start_microprogram;            // false: stop
     std::string stop_reason;
+    bool path3_masked{};                                                    // set by MSKPATH3 (VIF1)
+    std::function<void()> path3_unmasked;                                  // held PATH3 transfers resume
     uint32_t cl=1,wl=1,mode{},mask{},itop{},itops{},base{},ofst{},tops{},top{},mark{},num{},code{};
     bool dbf{};
     std::array<uint32_t,4> row{},col{};
@@ -65,7 +67,9 @@ private:
             case 0x03: if(vif1) base=imm&0x3ff; return;                            // BASE
             case 0x04: itops=imm&0x3ff; return;                                    // ITOP
             case 0x05: mode=imm&3; return;                                         // STMOD
-            case 0x06: return;                                                     // MSKPATH3 (no PATH3 arbitration)
+            case 0x06:                                                             // MSKPATH3: GIF_STAT.M3P
+                if(vif1) { bool was=path3_masked; path3_masked=(imm>>15)&1; if(was && !path3_masked && path3_unmasked) path3_unmasked(); }
+                return;
             case 0x07: mark=imm; return;                                           // MARK
             case 0x10: case 0x11: case 0x13: return;                               // FLUSHE/FLUSH/FLUSHA: synchronous
             case 0x14: case 0x15: case 0x17: {                                     // MSCAL / MSCALF / MSCNT

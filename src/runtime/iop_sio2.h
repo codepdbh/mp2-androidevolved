@@ -64,6 +64,19 @@ public:
         for(int index:{46,47,48,49,50,61,63}) add(index,lock);     // *_transfer_init: exclusive bus access
         add(52,[](IopKernel& k){ k.ret(0); }); add(62,[](IopKernel& k){ k.ret(0); });   // transfer_reset
         add(51,[this](IopKernel& k){ k.ret(transfer(k,k.arg(0))); });                    // sio2_transfer2
+        // v1 indices of the same functions (the disc SIO2MAN exports 23-26 at the addresses of 46/47/51/52).
+        for(int index:{23,24}) add(index,lock);
+        add(25,[this](IopKernel& k){ k.ret(transfer(k,k.arg(0))); });
+        add(26,[](IopKernel& k){ k.ret(0); });
+        // Multitap hooks with no MTAPMAN registered (SIO2MAN default paths):
+        // 57 change_slot(s32 slots[8]): slots[4+i] = (slots[i] is -1 or 0), returns 1 if all were.
+        add(57,[](IopKernel& k){
+            uint32_t p=k.arg(0),all=1;
+            for(uint32_t i=0;i<4;++i) { bool ok=k.read(p+i*4,4)+1u<2u; k.write(p+16+i*4,ok?1:0,4); if(!ok) all=0; }
+            k.ret(all);
+        });
+        add(58,[](IopKernel& k){ k.ret(1); });                                            // get_slot_max: 1
+        add(59,[](IopKernel& k){ k.ret(1); });                                            // get_slot_max2: 1
     }
 private:
     // sio2_transfer_data_t: stat6c, port_ctrl1[4], port_ctrl2[4], stat70, regdata[16], stat74,

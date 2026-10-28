@@ -90,6 +90,16 @@ public:
         if(!get(current_)) throw std::runtime_error("No current thread");
         auto& t=*threads_[current_]; t.state=State::Dormant; t.wait=Wait::None; t.wait_id=0;
     }
+    // TerminateThread: another thread goes dormant, leaving any wait it was in.
+    int terminate(int id) {
+        if(id==current_ || !get(id) || get(id)->state==State::Dormant) return -1;
+        auto& t=*threads_[id]; t.state=State::Dormant; t.wait=Wait::None; t.wait_id=0; t.descriptor.priority=t.initial_priority; return 0;
+    }
+    // ExitDeleteThread: the current thread ends and its slot is freed; the scheduler picks the next.
+    void exitDeleteCurrent() {
+        if(!get(current_)) throw std::runtime_error("No current thread");
+        threads_[current_].reset();
+    }
     // Cooperative priority selection: equal priorities keep FIFO queue position.
     int schedule() {
         int chosen=0;

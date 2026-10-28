@@ -3,6 +3,12 @@
 #include "iop_sif.h"
 #include "disc_image.h"
 #include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
 #include <chrono>
 #include <deque>
 #include <map>
@@ -34,6 +40,46 @@ public:
     struct RpcServer { uint32_t sd,sid,func,buf,queue; };
     struct Alarm { std::chrono::steady_clock::time_point due; uint32_t handler,arg; };
     std::vector<Alarm> alarms;
+    // MP2R_IOP_TRACE_AT=<hex pc> logs 3000 IOP control transfers from the first time a thread reaches it.
+    uint32_t trace_at=[]{ const char* v=std::getenv("MP2R_IOP_TRACE_AT"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
+    unsigned trace_left{},printf_trace{};
+    unsigned send_cmd_trace{},user_cmd_trace{},wake_trace{};
+    uint32_t mc_command_handler{},mc_devid_handler{},kelf_path_callback{},strtok_next{};
+    std::array<bool,64> irq_enabled{};
+    // C printf formatting for sysclib sprintf/vsprintf: writes the result at dest, returns its length.
+    uint32_t format(uint32_t dest,uint32_t fmt,const std::function<uint32_t()>& next) {
+        std::string out=formatString(fmt,next);
+        if(!stop_reason.empty()) return 0;
+        std::memcpy(sif.ram(dest,out.size()+1),out.c_str(),out.size()+1);
+        return uint32_t(out.size());
+    }
+    std::string formatString(uint32_t fmt,const std::function<uint32_t()>& next) {
+        std::string f=sif.readString(fmt,0x10000),out;
+        for(size_t i=0;i<f.size();++i) {
+            if(f[i]!='%') { out+=f[i]; continue; }
+            std::string spec="%"; ++i;
+            while(i<f.size() && std::strchr("-+ #0",f[i])) spec+=f[i++];
+            while(i<f.size() && (std::isdigit(uint8_t(f[i])) || f[i]=='.' || f[i]=='*')) {
+                if(f[i]=='*') { spec+=std::to_string(int32_t(next())); ++i; } else spec+=f[i++];
+            }
+            while(i<f.size() && (f[i]=='l' || f[i]=='h')) ++i;
+            if(i>=f.size()) break;
+            char c=f[i]; char buf[512];
+            switch(c) {
+                case 'd': case 'i': std::snprintf(buf,sizeof buf,(spec+"d").c_str(),int32_t(next())); break;
+                case 'u': case 'x': case 'X': case 'o': std::snprintf(buf,sizeof buf,(spec+c).c_str(),next()); break;
+                case 'p': std::snprintf(buf,sizeof buf,"%x",next()); break;
+                case 'c': std::snprintf(buf,sizeof buf,(spec+"c").c_str(),int(next()&0xff)); break;
+                case 's': { uint32_t p=next(); auto s=p?sif.readString(p,0x10000):std::string("(null)"); std::snprintf(buf,sizeof buf,(spec+"s").c_str(),s.c_str()); break; }
+                case '%': std::snprintf(buf,sizeof buf,"%%"); break;
+                default: stop(std::string("iop_printf_conversion ")+c); return {};
+            }
+            out+=buf;
+        }
+        return out;
+    }
+    // Device models that raise IOP interrupts on their own clock (e.g. SPU2 ADMA) poll here.
+    std::vector<std::function<void(IopKernel&)>> ticks;
     struct PendingCall { uint32_t sd,fno,buf,size; uint64_t ticket; };
 
     IopSif& sif;
@@ -67,13 +113,13 @@ public:
         uint32_t p=a&0x1fffffffu,v=0;
         if(p<IopSif::ram_size) { std::memcpy(&v,sif.ram(p,n),n); return v; }
         if(p>=0x1f800000u && p<0x1f800400u) { std::memcpy(&v,scratch_.data()+(p-0x1f800000u),n); return v; }
-        stop("iop_mmio_read 0x"+hex(a)); return 0;
+        stop("iop_mmio_read 0x"+hex(a)+" pc=0x"+hex(cpu.pc)+" ra=0x"+hex(cpu.r[31])); return 0;
     }
     void write(uint32_t a,uint32_t v,unsigned n) {
         uint32_t p=a&0x1fffffffu;
         if(p<IopSif::ram_size) { std::memcpy(sif.ram(p,n),&v,n); return; }
         if(p>=0x1f800000u && p<0x1f800400u) { std::memcpy(scratch_.data()+(p-0x1f800000u),&v,n); return; }
-        stop("iop_mmio_write 0x"+hex(a));
+        stop("iop_mmio_write 0x"+hex(a)+" pc=0x"+hex(cpu.pc)+" ra=0x"+hex(cpu.r[31])+" a0-a3=0x"+hex(cpu.r[4])+",0x"+hex(cpu.r[5])+",0x"+hex(cpu.r[6])+",0x"+hex(cpu.r[7])+" s0-s2=0x"+hex(cpu.r[16])+",0x"+hex(cpu.r[17])+",0x"+hex(cpu.r[18])+" thread="+std::to_string(current_));
     }
     uint32_t arg(int i) { return i<4?cpu.r[4+i]:read(cpu.r[29]+16+4*(i-4),4); }
     void ret(uint32_t v) { cpu.r[2]=v; }
@@ -151,12 +197,19 @@ public:
     void run(uint64_t budget) {
         while(budget && stop_reason.empty()) {
             wakeDelayed();
+            preempt();
             if(!current_ && !schedule()) return;
             auto& t=threads_.at(current_);
             if(cpu.pc==thread_exit) { t.state=State::Dormant; current_=0; continue; }
             if(cpu.pc==rpc_return) { finishRpc(); continue; }
-            if(dispatchImport()) { --budget; continue; }
+            if(cpu.pc==trace_at && trace_at) { trace_at=0; trace_left=3000; if(log) *log<<"IOP trace start thread "<<current_<<std::endl; }
+            uint32_t before=cpu.pc;
+            if(dispatchImport()) {
+                if(trace_left && log) { --trace_left; *log<<"IT import@0x"<<std::hex<<before<<" ra=0x"<<cpu.r[31]<<" v0=0x"<<cpu.r[2]<<" a0=0x"<<cpu.r[4]<<" a1=0x"<<cpu.r[5]<<" t="<<std::dec<<current_<<std::endl; }
+                --budget; continue;
+            }
             if(!cpu.step()) { stop(cpu.stop_reason); return; }
+            if(trace_left && cpu.pc!=before+4 && log) { --trace_left; *log<<"IT 0x"<<std::hex<<before<<"->0x"<<cpu.pc<<std::dec<<std::endl; }
             --budget;
         }
     }
@@ -289,6 +342,16 @@ private:
     }
     void ready(Thread& t,uint32_t result) { t.state=State::Ready; t.wait=Wait::None; t.r[2]=result; t.order=++order_; }
     // Preempt if a woken thread outranks the running one (called from non-interrupt services).
+    // A thread readied in interrupt context (alarm, device tick, SIF command) with a higher
+    // priority preempts the running one between instructions (never inside a delay slot);
+    // the preempted thread keeps its place at the head of its priority's ready queue.
+    void preempt() {
+        if(!current_ || nested_ || cpu.next_pc!=cpu.pc+4) return;
+        auto& cur=threads_.at(current_);
+        for(auto& [id,t]:threads_) if(t.state==State::Ready && t.priority<cur.priority) {
+            cur.state=State::Ready; save(cur); current_=0; return;
+        }
+    }
     void yieldTo() {
         if(!current_ || nested_) return;
         auto& cur=threads_.at(current_);
@@ -309,6 +372,7 @@ private:
     }
     void wakeDelayed() {
         fireAlarms();
+        if(!nested_) for(auto& t:ticks) { t(*this); if(!stop_reason.empty()) return; }
         auto now=std::chrono::steady_clock::now();
         for(auto& [id,t]:threads_) if(t.state==State::Waiting && t.wait==Wait::Delay && now>=t.wake_at) ready(t,0);
     }
@@ -338,9 +402,13 @@ inline void IopKernel::installCore() {
     auto& k=*this;
     auto add=[&](const char* lib,int index,Hle fn){ hle[{lib,index}]=std::move(fn); };
     // sysmem
-    add("sysmem",4,[](IopKernel& k){ k.ret(k.sif.allocate(k.arg(1))); });
-    add("sysmem",5,[](IopKernel& k){ k.ret(0); });
-    add("sysmem",7,[](IopKernel& k){ k.ret(IopSif::ram_size-0x180000); });
+    add("sysmem",4,[](IopKernel& k){ k.ret(k.sif.allocateMode(int(k.arg(0)),k.arg(1),k.arg(2))); });   // AllocSysMemory(mode,size,addr)
+    add("sysmem",5,[](IopKernel& k){ k.ret(uint32_t(k.sif.freeBlock(k.arg(0)))); });                    // FreeSysMemory
+    add("sysmem",6,[](IopKernel& k){ k.ret(IopSif::ram_size); });                                        // QueryMemSize
+    add("sysmem",7,[](IopKernel& k){ k.ret(k.sif.maxFree()); });                                         // QueryMaxFreeMemSize
+    add("sysmem",8,[](IopKernel& k){ k.ret(k.sif.totalFree()); });                                       // QueryTotalFreeMemSize
+    add("sysmem",9,[](IopKernel& k){ k.ret(k.sif.blockTop(k.arg(0))); });                                // QueryBlockTopAddress
+    add("sysmem",10,[](IopKernel& k){ k.ret(k.sif.blockSize(k.arg(0))); });                              // QueryBlockSize
     add("sysmem",14,[](IopKernel& k){ k.ret(0); });
     // loadcore
     add("loadcore",6,[](IopKernel& k){
@@ -352,12 +420,26 @@ inline void IopKernel::installCore() {
         k.ret(0);
     });
     add("loadcore",7,[](IopKernel& k){ k.ret(0); });
+    // modload 13 (IOPRP280 MODLOAD: stores the KELF path check callback MCMAN uses for mc0: modules).
+    // MP2R loads modules only from the disc, so the callback is kept and never invoked.
+    add("modload",13,[](IopKernel& k){ k.kelf_path_callback=k.arg(0); });
     // intrman: interrupts are delivered synchronously by MP2R, so the critical sections are no-ops.
     add("intrman",17,[](IopKernel& k){ if(k.arg(0)) k.write(k.arg(0),0,4); k.ret(0); });
     add("intrman",18,[](IopKernel& k){ k.ret(0); });
+    // EnableIntr/DisableIntr(irq, &old): device interrupts reach handlers through the native
+    // device models (libsd, cdvdman, SIO2), so only the enable state is kept.
+    add("intrman",6,[](IopKernel& k){ k.irq_enabled[k.arg(0)&63]=true; k.ret(0); });
+    add("intrman",7,[](IopKernel& k){
+        uint32_t irq=k.arg(0)&63; if(k.arg(1)) k.write(k.arg(1),k.irq_enabled[irq]?irq:uint32_t(-1),4);
+        k.irq_enabled[irq]=false; k.ret(0);
+    });
     add("intrman",23,[](IopKernel& k){ k.ret(k.nested_?1:0); });
     // stdio / Kprintf
-    add("stdio",4,[](IopKernel& k){ k.ret(0); });
+    add("stdio",4,[](IopKernel& k){                                    // printf: module diagnostics go to the log
+        int next=1; auto text=k.formatString(k.arg(0),[&]{ return k.arg(next++); });
+        if(k.log && ++k.printf_trace<=500) *k.log<<"IOP printf: "<<text<<(text.empty() || text.back()!='\n'?"\n":"");
+        k.ret(uint32_t(text.size()));
+    });
     // thbase
     add("thbase",4,[](IopKernel& k){
         uint32_t p=k.arg(0); Thread t; t.id=k.next_id_++;
@@ -385,6 +467,8 @@ inline void IopKernel::installCore() {
     auto wake=[](IopKernel& k){
         auto it=k.threads_.find(int(k.arg(0))); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
         auto& t=it->second;
+        if(k.log && ++k.wake_trace<=60) *k.log<<"IOP Wakeup "<<it->first<<" from thread "<<k.current_<<" ra=0x"<<std::hex<<k.cpu.r[31]<<std::dec
+                                              <<(t.state==State::Waiting && t.wait==Wait::Sleep?" (sleeping)":" (count)")<<'\n';
         if(t.state==State::Waiting && t.wait==Wait::Sleep) k.ready(t,0); else ++t.wakeups;
         k.ret(0);
     };
@@ -405,7 +489,8 @@ inline void IopKernel::installCore() {
     // thsemap
     add("thsemap",4,[](IopKernel& k){
         uint32_t p=k.arg(0); int id=k.next_id_++;
-        k.semas_[id]={int(k.read(p+4,4)),int(k.read(p+8,4)),k.read(p,4),k.read(p+12,4)}; k.ret(uint32_t(id));
+        // iop_sema_t { attr, option, initial, max }
+        k.semas_[id]={int(k.read(p+8,4)),int(k.read(p+12,4)),k.read(p,4),k.read(p+4,4)}; k.ret(uint32_t(id));
     });
     add("thsemap",5,[](IopKernel& k){ k.semas_.erase(int(k.arg(0))); k.ret(0); });
     auto signal=[](IopKernel& k){
@@ -480,6 +565,60 @@ inline void IopKernel::installCore() {
     add("sysclib",27,[](IopKernel& k){ k.ret(uint32_t(k.sif.readString(k.arg(0),0x100000).size())); });
     add("sysclib",23,[](IopKernel& k){ auto s=k.sif.readString(k.arg(1),0x100000); std::memcpy(k.sif.ram(k.arg(0),s.size()+1),s.c_str(),s.size()+1); k.ret(k.arg(0)); });
     add("sysclib",22,[](IopKernel& k){ auto a=k.sif.readString(k.arg(0),0x100000),b=k.sif.readString(k.arg(1),0x100000); k.ret(uint32_t(a<b?-1:a>b?1:0)); });
+    add("sysclib",13,[](IopKernel& k){ uint32_t n=k.arg(2); if(n) std::memmove(k.sif.ram(k.arg(0),n),k.sif.ram(k.arg(1),n),n); k.ret(k.arg(0)); });   // memmove
+    add("sysclib",17,[](IopKernel& k){ uint32_t n=k.arg(1); if(n) std::memset(k.sif.ram(k.arg(0),n),0,n); k.ret(0); });                             // bzero
+    add("sysclib",20,[](IopKernel& k){                                                                                                             // strcat
+        auto a=k.sif.readString(k.arg(0),0x100000),b=k.sif.readString(k.arg(1),0x100000);
+        std::memcpy(k.sif.ram(k.arg(0)+uint32_t(a.size()),b.size()+1),b.c_str(),b.size()+1); k.ret(k.arg(0));
+    });
+    auto find_char=[](IopKernel& k,bool last){
+        auto s=k.sif.readString(k.arg(0),0x100000); char c=char(k.arg(1));
+        size_t at=c==0?s.size():last?s.rfind(c):s.find(c);
+        k.ret(at==std::string::npos?0:k.arg(0)+uint32_t(at));
+    };
+    add("sysclib",21,[find_char](IopKernel& k){ find_char(k,false); });                                                                          // strchr
+    add("sysclib",32,[find_char](IopKernel& k){ find_char(k,true); });                                                                           // strrchr
+    add("sysclib",29,[](IopKernel& k){                                                                                                             // strncmp
+        uint32_t a=k.arg(0),b=k.arg(1),n=k.arg(2); int r=0;
+        for(uint32_t i=0;i<n;++i) { uint8_t x=uint8_t(k.read(a+i,1)),y=uint8_t(k.read(b+i,1)); if(x!=y) { r=x<y?-1:1; break; } if(!x) break; }
+        k.ret(uint32_t(r));
+    });
+    add("sysclib",30,[](IopKernel& k){                                                                                                             // strncpy
+        uint32_t d=k.arg(0),s=k.arg(1),n=k.arg(2); bool end=false;
+        for(uint32_t i=0;i<n;++i) { uint8_t c=end?0:uint8_t(k.read(s+i,1)); if(!c) end=true; k.write(d+i,c,1); }
+        k.ret(d);
+    });
+    auto parse_long=[](IopKernel& k,bool is_signed){                                                                                        // strtol / strtoul
+        auto s=k.sif.readString(k.arg(0),0x1000); char* end=nullptr;
+        uint32_t v=is_signed?uint32_t(int32_t(std::strtol(s.c_str(),&end,int(k.arg(2))))):uint32_t(std::strtoul(s.c_str(),&end,int(k.arg(2))));
+        if(k.arg(1)) k.write(k.arg(1),k.arg(0)+uint32_t(end-s.c_str()),4);
+        k.ret(v);
+    };
+    add("sysclib",36,[parse_long](IopKernel& k){ parse_long(k,true); });
+    add("sysclib",38,[parse_long](IopKernel& k){ parse_long(k,false); });
+    add("sysclib",7,[](IopKernel& k){ uint32_t c=k.arg(0)&0xff; k.ret(c>='A' && c<='Z'?c+32:c); });                                              // tolower
+    add("sysclib",6,[](IopKernel& k){ uint32_t c=k.arg(0)&0xff; k.ret(c>='a' && c<='z'?c-32:c); });                                              // toupper
+    add("sysclib",28,[](IopKernel& k){                                                                                                             // strncat
+        auto a=k.sif.readString(k.arg(0),0x100000); uint32_t d=k.arg(0)+uint32_t(a.size()),s=k.arg(1),n=k.arg(2),i=0;
+        for(;i<n;++i) { uint8_t c=uint8_t(k.read(s+i,1)); if(!c) break; k.write(d+i,c,1); }
+        k.write(d+i,0,1); k.ret(k.arg(0));
+    });
+    add("sysclib",35,[](IopKernel& k){                                                                                                             // strtok
+        uint32_t s=k.arg(0)?k.arg(0):k.strtok_next; auto delim=k.sif.readString(k.arg(1),0x1000);
+        if(!s) { k.ret(0); return; }
+        auto is_delim=[&](uint8_t c){ return c && delim.find(char(c))!=std::string::npos; };
+        while(is_delim(uint8_t(k.read(s,1)))) ++s;
+        if(!k.read(s,1)) { k.strtok_next=0; k.ret(0); return; }
+        uint32_t e=s; while(k.read(e,1) && !is_delim(uint8_t(k.read(e,1)))) ++e;
+        if(k.read(e,1)) { k.write(e,0,1); k.strtok_next=e+1; } else k.strtok_next=0;
+        k.ret(s);
+    });
+    add("sysclib",19,[](IopKernel& k){ int next=2; k.ret(k.format(k.arg(0),k.arg(1),[&]{ return k.arg(next++); })); });                       // sprintf
+    add("sysclib",42,[](IopKernel& k){ uint32_t ap=k.arg(2); k.ret(k.format(k.arg(0),k.arg(1),[&]{ uint32_t v=k.read(ap,4); ap+=4; return v; })); });   // vsprintf
+    add("sysclib",34,[](IopKernel& k){                                                                                                             // strstr
+        auto h=k.sif.readString(k.arg(0),0x100000),n=k.sif.readString(k.arg(1),0x100000);
+        size_t at=h.find(n); k.ret(at==std::string::npos?0:k.arg(0)+uint32_t(at));
+    });
     // sifman: IOP->EE DMA copies directly into EE RAM.
     auto set_dma=[](IopKernel& k){
         uint32_t list=k.arg(0),count=k.arg(1);
@@ -502,6 +641,7 @@ inline void IopKernel::installCore() {
         k.sif.user_command=[&k](uint32_t c,uint32_t packet){
             auto it=k.cmd_handlers_.find(c);
             if(it==k.cmd_handlers_.end()) return false;
+            if(k.log && ++k.user_cmd_trace<=400) *k.log<<"IOP user cmd cid=0x"<<std::hex<<c<<" handler=0x"<<it->second.first<<" words="<<k.read(packet+16,4)<<","<<k.read(packet+20,4)<<","<<k.read(packet+24,4)<<","<<k.read(packet+28,4)<<std::dec<<'\n';
             k.callGuest(it->second.first,{packet,it->second.second});
             return true;
         };
@@ -510,6 +650,7 @@ inline void IopKernel::installCore() {
     add("sifcmd",11,[](IopKernel& k){ k.cmd_handlers_.erase(k.arg(0)); k.ret(0); });
     auto send_cmd=[](IopKernel& k){
         uint32_t cid=k.arg(0),packet=k.arg(1),psize=k.arg(2),src=k.arg(3),dest=k.arg(4),size=k.arg(5);
+        if(k.log && ++k.send_cmd_trace<=400) *k.log<<"IOP SendCmd cid=0x"<<std::hex<<cid<<" words="<<k.read(packet+16,4)<<","<<k.read(packet+20,4)<<","<<k.read(packet+24,4)<<","<<k.read(packet+28,4)<<std::dec<<" size="<<size<<'\n';
         k.sif.sendFromIop(cid,packet,psize,dest,src,size);
         k.ret(1);
     };
@@ -569,6 +710,12 @@ inline void IopKernel::installCore() {
     // Export 114 of the IOPRP280 cdvdman 2.35 is a sector read with sceCdRead's signature (used by CDVDSTM).
     hle[{"cdvdman",114}]=hle[{"cdvdman",6}];
     add("cdvdman",8,[](IopKernel& k){ k.ret(0); });      // sceCdGetError: SCECdErNO
+    // secrman (BIOS ROM module, not in IOPRP280): MCMAN registers its SIO2 command handlers here.
+    // MagicGate card authentication is not emulated, so SecrAuthCard reports failure.
+    add("secrman",4,[](IopKernel& k){ k.mc_command_handler=k.arg(0); k.ret(0); });   // SecrSetMcCommandHandler
+    add("secrman",5,[](IopKernel& k){ k.mc_devid_handler=k.arg(0); k.ret(0); });     // SecrSetMcDevIDHandler
+    add("secrman",6,[](IopKernel& k){ k.ret(0); });                                  // SecrAuthCard: not authenticated
+    add("secrman",7,[](IopKernel& k){ k.ret(0); });                                  // SecrResetAuthCard
     add("cdvdman",11,[](IopKernel& k){ k.ret(0); });     // sceCdSync: no command in progress
     add("cdvdman",12,[](IopKernel& k){ k.ret(0x14); });  // sceCdGetDiskType: SCECdPS2DVD
     add("cdvdman",13,[](IopKernel& k){ k.ret(2); });     // sceCdDiskReady: SCECdComplete
@@ -587,6 +734,9 @@ inline void IopKernel::installCore() {
             k.ret(uint32_t(k.cd_intr_event)); return;
         }
         if(code==-8) { k.ret(1); return; }                // 0xFFFFFFF8: spin control
+        // 0xFFFFFFFE: cdvdman's read-request word, cleared at init and when a read completes;
+        // IOP-side reads here complete within the call, so none is outstanding.
+        if(code==-2) { k.ret(0); return; }
         if(code==-17) { k.ret(5000); return; }            // 0xFFFFFFEF: stream timeout (cdvdman default, ms)
         if(code==-15) { k.ret(15000); return; }           // 0xFFFFFFF1: sync timeout (cdvdman default, ms)
         if(code==-18) { k.ret(0); return; }               // 0xFFFFFFEE: last-read timeout set (reads never time out here)

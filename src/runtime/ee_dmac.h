@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -31,6 +32,9 @@ public:
     // D_CTRL starts with DMAE set: the EE kernel enables the DMAC during boot, before any game code.
     uint32_t ctrl=1,pcr{},sqwc{},rbsr{},rbor{},stadr{},enable=0x1201;   // D_ENABLER reset value
     std::string stop_reason;
+    // Addresses in the DMAC register block past D_STADR with no documented register (MP2 writes
+    // 0x1000E100 after waiting on channel 8): values are kept and read back, with no other effect.
+    std::map<uint32_t,uint32_t> undocumented;
     uint8_t* ram{}; uint8_t* scratchpad{};
     uint64_t qwords_transferred{};
 
@@ -43,6 +47,7 @@ public:
     bool owns(uint32_t a) const {
         auto p=a&0x1fffffffu;
         if(channelOf(p)>=0) return true;
+        if(p>=0x1000e070u && p<0x1000f000u && !(p&0xf)) return true;   // undocumented DMAC block registers
         return p==0x1000e000u || p==0x1000e020u || p==0x1000e030u || p==0x1000e040u || p==0x1000e050u ||
                p==0x1000e060u || p==0x1000f520u || p==0x1000f590u;
     }
@@ -53,6 +58,7 @@ public:
             switch((p&0x3ffu)&~0xfu) { case 0x00:return c.chcr; case 0x10:return c.madr; case 0x20:return c.qwc; case 0x30:return c.tadr;
                 case 0x40:return c.asr0; case 0x50:return c.asr1; case 0x80:return c.sadr; default:return 0; }
         }
+        if(p>=0x1000e070u && p<0x1000f000u) { auto it=undocumented.find(p); return it==undocumented.end()?0:it->second; }
         switch(p) { case 0x1000e000u:return ctrl; case 0x1000e020u:return pcr; case 0x1000e030u:return sqwc;
             case 0x1000e040u:return rbsr; case 0x1000e050u:return rbor; case 0x1000e060u:return stadr; case 0x1000f520u:return enable; }
         return 0;
@@ -69,6 +75,7 @@ public:
             }
             return -1;
         }
+        if(p>=0x1000e070u && p<0x1000f000u) { undocumented[p]=v; return -1; }
         switch(p) { case 0x1000e000u:ctrl=v;break; case 0x1000e020u:pcr=v;break; case 0x1000e030u:sqwc=v;break;
             case 0x1000e040u:rbsr=v;break; case 0x1000e050u:rbor=v;break; case 0x1000e060u:stadr=v;break; case 0x1000f590u:enable=v;break; }
         return -1;

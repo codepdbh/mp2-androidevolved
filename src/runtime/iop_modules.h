@@ -13,10 +13,21 @@ using IopModuleLoader=std::function<int(IopSif&,const std::string& path,const st
 // Reads a whole file named by an IOP device path ("cdrom0:\DIR\FILE;1"); empty optional if absent.
 using IopFileReader=std::function<std::optional<std::vector<uint8_t>>(const std::string& path)>;
 inline void registerResidentIopServices(IopSif& iop,IopModuleLoader loader={},IopFileReader files={}) {
-    // IOP heap (sid 0x80000003): 1 = alloc(size) -> addr, 2 = free(addr), 3 = load(addr, path) -> bytes.
+    // IOP heap (sid 0x80000003, Sony sce_iopmem in IOPRP280 FILEIO): 1 alloc(size), 2 free(addr),
+    // 3 load(addr, path), 4 alloc(size, mode, addr), 5 QueryMemSize, 6 QueryMaxFreeMemSize,
+    // 7 QueryTotalFreeMemSize, 8 QueryBlockTopAddress(addr), 9 QueryBlockSize(addr).
     iop.addServer(0x80000003,0x200,[files](IopSif& sif,int function,uint32_t buffer,uint32_t) -> uint32_t {
-        if(function==1) { sif.write32(buffer,sif.allocate(sif.read32(buffer))); return buffer; }
-        if(function==2) { sif.write32(buffer,0); return buffer; }
+        uint32_t a0=sif.read32(buffer);
+        switch(function) {
+            case 1: sif.write32(buffer,sif.allocateMode(0,a0)); return buffer;
+            case 2: sif.write32(buffer,uint32_t(sif.freeBlock(a0))); return buffer;
+            case 4: sif.write32(buffer,sif.allocateMode(int(sif.read32(buffer+4)),a0,sif.read32(buffer+8))); return buffer;
+            case 5: sif.write32(buffer,IopSif::ram_size); return buffer;
+            case 6: sif.write32(buffer,sif.maxFree()); return buffer;
+            case 7: sif.write32(buffer,sif.totalFree()); return buffer;
+            case 8: sif.write32(buffer,sif.blockTop(a0)); return buffer;
+            case 9: sif.write32(buffer,sif.blockSize(a0)); return buffer;
+        }
         if(function==3) {
             uint32_t address=sif.read32(buffer); auto path=sif.readString(buffer+4,252);
             auto data=files?files(path):std::nullopt;

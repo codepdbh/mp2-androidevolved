@@ -81,15 +81,30 @@ for start,end in covered+[(0x5b2c40,0x5b2c40)]:
 # callbacks) that sit right after a function end (jr $ra / tail j + delay slot, then padding).
 # Each splits the body that contains it. Switch jump-table targets do not follow an end.
 def follows_end(t):
+    # t starts a function only after a complete `jr $ra` / `j` plus its delay slot: either the last
+    # non-zero word before t is the delay slot (branch one word earlier), or it is the branch itself
+    # and its delay slot is a nop that precedes t. A word right after the branch is a delay slot.
+    ends=lambda w: w==0x03e00008 or (w>>26)==2
     a=t-4
     while a>0x100000 and word(a)==0: a-=4
-    return any(word(e)==0x03e00008 or (word(e)>>26)==2 for e in (a-4,a))
+    return ends(word(a-4)) or (ends(word(a)) and a+4<t)
 entries=set()
 for a in range(0x100000,0x5b2c3c,4):
     w=word(a)
     if (w>>26)==3:
         t=((a+4)&0xf0000000)|((w&0x3ffffff)<<2)
         if 0x100000<=t<0x5b2c3c: entries.add(t)
+# Tail calls: a `j` whose target lies outside the body containing it (thunks, sibling calls).
+starts_sorted=sorted(merged)
+def body_of(x):
+    i=bisect.bisect_right(starts_sorted,x)-1
+    if i<0: return None
+    s=starts_sorted[i]; return s if x<int(merged[s]['End'],0) else None
+for a in range(0x100000,0x5b2c3c,4):
+    w=word(a)
+    if (w>>26)==2:
+        t=((a+4)&0xf0000000)|((w&0x3ffffff)<<2)
+        if 0x100000<=t<0x5b2c3c and (body_of(a) is None or body_of(a)!=body_of(t)): entries.add(t)
 for a in range(0x54d000,0x5c0d00,4):
     v=word(a)
     if 0x100000<=v<0x5b2c3c and v%4==0 and follows_end(v): entries.add(v)
@@ -113,7 +128,18 @@ for t in sorted(entries):
     if t in merged: continue
     i=bisect.bisect_left(ordered,t)-1
     owner=ordered[i] if i>=0 else None
-    if owner is None or int(merged[owner]['End'],0)<=t: continue
+    if owner is None or int(merged[owner]['End'],0)<=t:
+        # Entry outside every body (e.g. a `j` thunk in a region the gap pass took for data): it
+        # runs up to its `jr $ra` / `j` plus delay slot, bounded by the next known start.
+        limit=ordered[i+1] if i+1<len(ordered) else 0x5b2c3c
+        e=t
+        while e<limit and e<t+0x2000:
+            w=word(e); e+=4
+            if w==0x03e00008 or (w>>26)==2: e+=4; break
+        bisect.insort(ordered,t)
+        merged[t]={'Name':f'mp2_{t:08X}','Start':f'0x{t:08X}','End':f'0x{min(e,limit):08X}','Size':str(min(e,limit)-t)}
+        split+=1
+        continue
     bisect.insort(ordered,t)
     end=int(merged[owner]['End'],0)
     merged[owner]['End']=f'0x{t:08X}'; merged[owner]['Size']=str(t-owner)

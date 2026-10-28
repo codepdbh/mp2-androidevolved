@@ -62,11 +62,39 @@ public:
     std::string readString(uint32_t address,uint32_t max) {
         std::string s; for(uint32_t i=0;i<max;++i) { char c=char(*ram(address+i,1)); if(!c) break; s+=c; } return s;
     }
-    uint32_t allocate(uint32_t bytes) {
-        uint32_t address=(heap_+63)&~63u; heap_=address+((bytes+63)&~63u);
-        if(heap_>ram_size) throw std::runtime_error("IOP HLE heap exhausted");
-        return address;
+    // IOP system memory blocks above heap_ (sysmem AllocSysMemory semantics, 256-byte units):
+    // mode 0 lowest fitting address, 1 highest, 2 at a given address. Returns 0 when it does not fit.
+    std::map<uint32_t,uint32_t> blocks_;                    // address -> size
+    uint32_t allocateMode(int mode,uint32_t bytes,uint32_t at=0) {
+        uint32_t size=(bytes+255)&~255u; if(!size) return 0;
+        std::vector<std::pair<uint32_t,uint32_t>> gaps; uint32_t cursor=heap_;
+        for(auto [a,n]:blocks_) { if(a>cursor) gaps.push_back({cursor,a-cursor}); cursor=std::max(cursor,a+n); }
+        if(cursor<ram_size) gaps.push_back({cursor,ram_size-cursor});
+        for(size_t i=0;i<gaps.size();++i) {
+            auto [g,n]=mode==1?gaps[gaps.size()-1-i]:gaps[i];
+            if(mode==2) { uint32_t a=at&~255u; if(a<g || a+size>g+n) continue; blocks_[a]=size; return a; }
+            if(n<size) continue;
+            uint32_t a=mode==1?g+n-size:g; blocks_[a]=size; return a;
+        }
+        return 0;
     }
+    uint32_t allocate(uint32_t bytes) {
+        uint32_t a=allocateMode(0,bytes);
+        if(!a) throw std::runtime_error("IOP heap exhausted");
+        return a;
+    }
+    int freeBlock(uint32_t address) { return blocks_.erase(address)?0:-1; }
+    uint32_t maxFree() const {
+        uint32_t best=0,cursor=heap_;
+        for(auto [a,n]:blocks_) { if(a>cursor) best=std::max(best,a-cursor); cursor=std::max(cursor,a+n); }
+        return cursor<ram_size?std::max(best,ram_size-cursor):best;
+    }
+    uint32_t totalFree() const { uint32_t used=0; for(auto [a,n]:blocks_) used+=n; return ram_size-heap_-used; }
+    uint32_t blockTop(uint32_t address) const {
+        auto it=blocks_.upper_bound(address); if(it==blocks_.begin()) return 0; --it;
+        return address<it->first+it->second?it->first:0;
+    }
+    uint32_t blockSize(uint32_t address) const { uint32_t a=blockTop(address); return a?blocks_.at(a):0; }
     void addServer(uint32_t sid,uint32_t size,Handler handler,std::string module) {
         uint32_t token=allocate(0x40);            // stands in for the IOP SifRpcServerData_t
         servers_[sid]={sid,token,allocate(size),size,std::move(handler),std::move(module)};
@@ -139,12 +167,13 @@ public:
         if(sif0_.front().due>std::chrono::steady_clock::now()) return;   // the device has not finished yet
         auto out=std::move(sif0_.front()); sif0_.pop_front();
         if(!out.data.empty()) std::memcpy(ee+(out.data_dest&0x1ffffff),out.data.data(),out.data.size());
+        if(log && (out.data_dest&0x1ffffff)>=0x1ff0000u) *log<<"SIF0 data to stack 0x"<<std::hex<<out.data_dest<<" size=0x"<<out.data.size()<<std::dec<<'\n';
         std::memcpy(ee+(ee_packet_buffer_&0x1ffffff),out.packet.data(),out.packet.size());
         dmac_stat|=1u<<5; sif0_busy_=true;
     }
 private:
     void boot() {
-        servers_.clear(); sif0_.clear(); sif0_busy_=false; heap_=0x00020000; pending_calls_.clear();
+        servers_.clear(); sif0_.clear(); sif0_busy_=false; heap_=0x00020000; blocks_.clear(); pending_calls_.clear();
         smcom_=command_buffer; smflag_|=SIFINIT|CMDINIT|BOOTEND;
         if(on_reboot) on_reboot(*this);
     }
@@ -218,6 +247,7 @@ private:
         if(s.rmode) { send(0x80000008,{s.rec,s.pkt,s.rpc,s.cd,0x8000000a,0,0,0},s.recvbuf,std::move(data)); return; }
         if(!ee_) throw std::runtime_error("IOP RPC completion before any EE transfer");
         if(!data.empty()) std::memcpy(ee_+(s.recvbuf&0x1ffffff),data.data(),data.size());
+        if(log && (s.recvbuf&0x1ffffff)>=0x1ff0000u) *log<<"RPC reply to stack 0x"<<std::hex<<s.recvbuf<<" size=0x"<<data.size()<<" pkt=0x"<<s.pkt<<std::dec<<'\n';
         uint32_t done[12]={64,0,0x80000008,0,0,s.pkt,0,s.cd,0x8000000a,0,0,0}; // rec_id/rpc_id 0: completion
         std::memcpy(ee_+(s.pkt&0x1ffffff),done,sizeof done);
     }
