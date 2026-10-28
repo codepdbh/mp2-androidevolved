@@ -17,6 +17,8 @@
 #include "iop_cdvd.h"
 #include "iop_fileio.h"
 #include "iop_sio2.h"
+#include "ee_dmac.h"
+#include "gs_gif.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
@@ -158,6 +160,28 @@ public:
     // SIF0/SIF1/SIF2 channel registers (0x1000C000-0x1000CFFF). Transfers themselves go through
     // the kernel SIF syscalls; these hold what the EE library reads back (CHCR.STR etc.).
     std::unordered_map<uint32_t,uint32_t> sif_channel_registers;
+    // DMA controller with the GIF (PATH3) as sink; GS register state collected for the renderer.
+    mp2r::EeDmac dmac=[this]{
+        mp2r::EeDmac d;
+        d.sinks[2]=[this](const uint8_t* q,uint32_t n,uint32_t,uint32_t,bool has_tag){ if(!has_tag) gif.feed(q,n); };
+        d.sinks[1]=[this](const uint8_t* q,uint32_t n,uint32_t,uint32_t,bool has_tag){
+            uint32_t code=0; if(n) std::memcpy(&code,q,4);
+            dmac.stop_reason="vif1_requires_vu1 first_code=0x"+hex(code)+(has_tag?" (tag)":"");
+            throw std::runtime_error(dmac.stop_reason);
+        };
+        return d;
+    }();
+    mp2r::GsGif gif=[this]{
+        mp2r::GsGif g;
+        g.write_register=[this](uint8_t reg,uint64_t value){
+            if(reg<gs_regs.size()) gs_regs[reg]=value;
+            if(++gs_writes<=32) log<<"GS reg 0x"<<std::hex<<int(reg)<<" = 0x"<<value<<std::dec<<'\n';
+        };
+        g.image=[this](const uint8_t*,uint32_t bytes){ gs_image_bytes+=bytes; };
+        return g;
+    }();
+    std::array<uint64_t,0x64> gs_regs{};
+    uint64_t gs_writes{},gs_image_bytes{};
     static bool sifChannelRegister(uint32_t address) { auto p=address&0x1fffffffu; return p>=0x1000c000u && p<0x1000d000u; }
     struct HandlerCall { uint32_t entry,a0,a1,gp; };
     struct InterruptFrame { R5900Context cpu; std::vector<SyscallFrame> syscall_frames; std::vector<HandlerCall> calls; std::size_t next{}; };
@@ -633,6 +657,7 @@ public:
         if(uint32_t value; special.read(address,&value,4)) return value;
         if((address&0x1fffffff)==0x1000e010) return dmac_stat;
         if(sifChannelRegister(address)) return sif_channel_registers[address&0x1fffffffu];
+        if(dmac.owns(address)) return dmac.read(address);
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) return iop.getReg(((p-0x1000f200u)>>4)+1);
         if(gsPrivileged(address)) return uint32_t(gsRead(address&~7u)>>((address&4)*8));
         if((address&0x1fffffff)==0x1000f000) return intc.status();
@@ -649,6 +674,15 @@ public:
         if(special.write(address,&value,4)) return;
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) { iop.setReg(((p-0x1000f200u)>>4)+1,value); return; }
         if(sifChannelRegister(address)) { sif_channel_registers[address&0x1fffffffu]=value; return; }
+        if(dmac.owns(address)) {
+            dmac.ram=guest_ram; dmac.scratchpad=special.scratchpad();
+            int done=-1;
+            try { done=dmac.write(address,value); }
+            catch(const std::exception&) { reason=dmac.stop_reason.empty()?"dma_error":dmac.stop_reason; memory_address=address; blocked_source=cpu->pc; throw MemoryStop{}; }
+            if(!gif.stop_reason.empty()) { reason=gif.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
+            if(done>=0) dmac_stat|=1u<<done;                   // channel interrupt status (INT1 when unmasked)
+            return;
+        }
         if((address&0x1fffffff)==0x1000e010) { dmac_stat=(dmac_stat&~(value&0x3ffu))^(value&0x3ff0000u); return; }
         if(gsPrivileged(address) && !(address&4)) { gsWrite(address,value); return; }
         if((address&0x1fffffff)==0x1000f000) { intc.acknowledge(value); return; }
