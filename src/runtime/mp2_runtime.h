@@ -15,6 +15,8 @@
 #include "iop_kernel.h"
 #include "iop_libsd.h"
 #include "iop_cdvd.h"
+#include "iop_fileio.h"
+#include "iop_sio2.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
@@ -46,6 +48,7 @@ public:
     mp2r::EeSemaphores semaphores;
     mp2r::EeTimer3Registers timer3;
     mp2r::EeTimerRegisters timer2{0x10001000};
+    mp2r::EeTimerRegisters timer0{0x10000000,true},timer1{0x10000800,true};
     mp2r::EeIntc intc;
     mp2r::EeThreads threads;
     mp2r::EeOsdConfig osd;
@@ -127,6 +130,8 @@ public:
         uint64_t scaled=uint64_t(ns%1000000000LL)*147456000u+clock_fraction;
         auto cycles=uint64_t(ns/1000000000LL)*147456000u+scaled/1000000000u;
         clock_fraction=scaled%1000000000u;
+        if(timer0.advanceBusCycles(cycles)) intc.raise(9);
+        if(timer1.advanceBusCycles(cycles)) intc.raise(10);
         if(timer2.advanceBusCycles(cycles)) intc.raise(11);
         if(timer3.advanceBusCycles(cycles)) intc.raise(12);
         auto blank=vblank.advance(uint64_t(ns));
@@ -262,7 +267,7 @@ public:
     unsigned checkpoint_limit;
     explicit MP2InitializationRuntime(std::ostream& output,uint32_t table_base,unsigned limit)
         :syscall_table(table_base),log(output),checkpoint_limit(limit) {
-        iop.log=&log; iop_kernel.log=&log; libsd.install(iop_kernel);
+        iop.log=&log; iop_kernel.log=&log; libsd.install(iop_kernel); sio2.install(iop_kernel);
         iop_kernel.ee_memory=[this](uint32_t address){ return guest_ram+(address&0x1ffffff); };
         auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
         iop.on_reboot=[this](mp2r::IopSif&){ iop_kernel.reset(); registerIopServices(); };
@@ -274,6 +279,24 @@ public:
         auto files=[this](const std::string& path){ return readDiscFile(path); };
         mp2r::registerResidentIopServices(iop,loader,files);
         mp2r::registerCdvdServices(iop,disc?&*disc:nullptr);
+        fileio.resolve=[this](const std::string& path){ return resolveDiscPath(path); };
+        fileio.tty=&log;
+        fileio.install(iop);
+    }
+    mp2r::IopFileio fileio;
+    // "cdrom0:\DIR\FILE;1" -> extracted file, matching ISO9660 names case-insensitively.
+    std::optional<std::filesystem::path> resolveDiscPath(const std::string& path) {
+        if(!disc || path.rfind("cdrom0:",0)!=0) return std::nullopt;
+        std::string key;
+        for(char c:path.substr(7)) { if(c==';') break; key+=char(c=='\\'?'/':std::toupper(static_cast<unsigned char>(c))); }
+        while(!key.empty() && key.front()=='/') key.erase(0,1);
+        for(const auto& e:disc->files()) {
+            if(e.path.size()!=key.size()) continue;
+            bool same=true;
+            for(size_t i=0;i<key.size() && same;++i) same=std::toupper(static_cast<unsigned char>(e.path[i]))==key[i];
+            if(same) return disc_root/e.path;
+        }
+        return std::nullopt;
     }
     // "cdrom0:\DIR\FILE;1" -> bytes of <disc root>/DIR/FILE (only the cdrom0: device exists).
     std::optional<std::vector<uint8_t>> readDiscFile(const std::string& path) {
@@ -289,6 +312,7 @@ public:
     mp2r::IopSif iop;
     mp2r::IopKernel iop_kernel{iop};
     mp2r::IopLibsd libsd;
+    mp2r::IopSio2 sio2;
     std::optional<mp2r::DiscImage> disc;
     std::filesystem::path disc_root;
     // Hardware drivers MP2R provides as native libraries instead of running their IRX.
@@ -575,11 +599,19 @@ public:
         if(gsPrivileged(a)) return gsRead(a);
         return loadSpecial<uint64_t>(cpu,a,"unsupported_mmio_read64");
     }
-    uint16_t Load16(uint8_t*,R5900Context* cpu,uint32_t a) { return loadSpecial<uint16_t>(cpu,a,"unsupported_mmio_read16"); }
+    static bool ioRegister(uint32_t a) { auto p=a&0x1fffffffu; return p>=0x10000000u && p<0x10010000u; }
+    // 16-bit I/O register accesses act on the 32-bit register containing them.
+    uint16_t Load16(uint8_t* ram,R5900Context* cpu,uint32_t a) {
+        if(ioRegister(a)) return uint16_t(Load32(ram,cpu,a&~3u)>>((a&2)*8));
+        return loadSpecial<uint16_t>(cpu,a,"unsupported_mmio_read16");
+    }
     uint8_t Load8(uint8_t*,R5900Context* cpu,uint32_t a) { return loadSpecial<uint8_t>(cpu,a,"unsupported_mmio_read8"); }
     __m128i Load128(uint8_t*,R5900Context* cpu,uint32_t a) { return loadSpecial<__m128i>(cpu,a&~15u,"unsupported_mmio_read128"); }
     void Store8(uint8_t*,R5900Context* cpu,uint32_t a,uint8_t v) { storeSpecial(cpu,a,v,"unsupported_mmio_write8"); }
-    void Store16(uint8_t*,R5900Context* cpu,uint32_t a,uint16_t v) { storeSpecial(cpu,a,v,"unsupported_mmio_write16"); }
+    void Store16(uint8_t* ram,R5900Context* cpu,uint32_t a,uint16_t v) {
+        if(ioRegister(a) && !(a&2)) { Store32(ram,cpu,a,v); return; }
+        storeSpecial(cpu,a,v,"unsupported_mmio_write16");
+    }
     void Store64(uint8_t*,R5900Context* cpu,uint32_t a,uint64_t v) {
         if(gsPrivileged(a)) { gsWrite(a,v); return; }
         storeSpecial(cpu,a,v,"unsupported_mmio_write64");
@@ -607,6 +639,8 @@ public:
         if((address&0x1fffffff)==0x1000f010) return intc.mask();
         if(timer3.owns(address&0x1fffffff)) return timer3.read(address&0x1fffffff);
         if(timer2.owns(address&0x1fffffff)) return timer2.read(address&0x1fffffff);
+        if(timer0.owns(address&0x1fffffff)) return timer0.read(address&0x1fffffff);
+        if(timer1.owns(address&0x1fffffff)) return timer1.read(address&0x1fffffff);
         reason="unsupported_mmio_read32"; memory_address=address; blocked_source=cpu->pc;
         throw MemoryStop{};
     }
@@ -619,6 +653,11 @@ public:
         if(gsPrivileged(address) && !(address&4)) { gsWrite(address,value); return; }
         if((address&0x1fffffff)==0x1000f000) { intc.acknowledge(value); return; }
         if((address&0x1fffffff)==0x1000f010) { intc.toggleMask(value); return; }
+        for(auto* t:{&timer0,&timer1}) if(t->owns(address&0x1fffffff)) {
+            t->write(address&0x1fffffff,value);
+            if(!t->needsVideoClock()) return;
+            reason="timer_gate_input_required"; memory_address=address; blocked_source=cpu->pc; throw MemoryStop{};
+        }
         if(timer2.owns(address&0x1fffffff)) {
             timer2.write(address&0x1fffffff,value);
             if(!timer2.needsVideoClock()) return;

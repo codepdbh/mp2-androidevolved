@@ -72,6 +72,35 @@ for start,end in covered+[(0x5b2c40,0x5b2c40)]:
                 gap_functions+=1
             a=b
     cursor=max(cursor,end)
+# Entry points inside a known body: JAL targets and code pointers stored in data (vtables,
+# callbacks) that sit right after a function end (jr $ra / tail j + delay slot, then padding).
+# Each splits the body that contains it. Switch jump-table targets do not follow an end.
+def follows_end(t):
+    a=t-4
+    while a>0x100000 and word(a)==0: a-=4
+    return any(word(e)==0x03e00008 or (word(e)>>26)==2 for e in (a-4,a))
+entries=set()
+for a in range(0x100000,0x5b2c3c,4):
+    w=word(a)
+    if (w>>26)==3:
+        t=((a+4)&0xf0000000)|((w&0x3ffffff)<<2)
+        if 0x100000<=t<0x5b2c3c: entries.add(t)
+for a in range(0x54d000,0x5c0d00,4):
+    v=word(a)
+    if 0x100000<=v<0x5b2c3c and v%4==0 and follows_end(v): entries.add(v)
+split=0
+ordered=sorted(merged)
+for t in sorted(entries):
+    if t in merged: continue
+    i=bisect.bisect_left(ordered,t)-1
+    owner=ordered[i] if i>=0 else None
+    if owner is None or int(merged[owner]['End'],0)<=t: continue
+    bisect.insort(ordered,t)
+    end=int(merged[owner]['End'],0)
+    merged[owner]['End']=f'0x{t:08X}'; merged[owner]['Size']=str(t-owner)
+    merged[t]={'Name':f'mp2_{t:08X}','Start':f'0x{t:08X}','End':f'0x{end:08X}','Size':str(end-t)}
+    split+=1
+print(f'{split} bodies split at entry points')
 mapping=root/'private/ghidra/mp2-functions-merged.csv'
 with mapping.open('w',newline='') as f:
     w=csv.DictWriter(f,fieldnames=['Name','Start','End','Size']); w.writeheader()

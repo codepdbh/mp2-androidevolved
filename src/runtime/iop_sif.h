@@ -91,6 +91,14 @@ public:
         sif0_.push_back(std::move(out));
     }
     void pumpPending(uint32_t& dmac_stat) { if(ee_) pump(ee_,dmac_stat); }
+    // Header-only system command with opt field; extra data lands at ee_dest before the packet.
+    void sendSystemCommand(uint32_t cid,uint32_t opt,uint32_t ee_dest,std::vector<uint8_t> data) {
+        Outgoing out; out.packet.resize(16);
+        uint32_t header[4]={16u|uint32_t(data.size()<<8),ee_dest,cid,opt};
+        std::memcpy(out.packet.data(),header,16);
+        out.data_dest=ee_dest; out.data=std::move(data);
+        sif0_.push_back(std::move(out));
+    }
     // EE RAM as seen by IOP-side DMA (known once the EE has issued its first SIF transfer).
     uint8_t* eeMemory() const { if(!ee_) throw std::runtime_error("IOP access to EE RAM before any SIF transfer"); return ee_; }
 

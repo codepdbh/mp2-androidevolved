@@ -22,7 +22,11 @@ int main() {
     check(timer.advanceBusCycles(17) && timer.read(base)==2); // reset on target, three periods
     timer.write(base+0x10,0); auto frozen=timer.read(base);
     check(!timer.advanceBusCycles(9999) && timer.read(base)==frozen);
-    timer.write(base+0x10,0x83);
+    timer.write(base,0); timer.write(base+0x10,0x83);                  // PAL HBlank clock: 15625 lines/s
+    check(!timer.advanceBusCycles(9437) && timer.read(base)==0 && !timer.advanceBusCycles(1) && timer.read(base)==1);
+    timer.write(base,0); timer.write(base+0x10,0x83);
+    timer.advanceBusCycles(147456000); check(timer.read(base)==15625);   // one second, no drift
+    timer.write(base+0x10,0x84);                                         // gate input: explicit refusal
     bool refused=false; try { timer.advanceBusCycles(1); } catch(const std::runtime_error&) { refused=true; }
     check(refused && timer.needsVideoClock());
     mp2r::EeIntc intc;
