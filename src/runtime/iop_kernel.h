@@ -43,6 +43,9 @@ public:
     DiscImage* disc{};
     uint64_t cd_reads{};
     int cd_stream_flag{},cd_intr_event{};
+    std::array<uint32_t,2> cd_stm_callback{};
+    std::vector<uint32_t> cd_pending_callbacks;
+    bool cd_in_callback{};
     std::map<std::string,uint32_t> devices;           // ioman device name -> iop_device_t
 
     // Sentinel return addresses inside the unused low IOP page.
@@ -127,7 +130,8 @@ public:
         if(!call_stack_) call_stack_=sif.allocate(0x4000)+0x4000;
         for(size_t i=0;i<args.size() && i<4;++i) cpu.r[4+i]=args[i];
         if(gp) cpu.r[28]=*gp;
-        cpu.r[29]=call_stack_-0x40; cpu.r[31]=call_return; cpu.jump(pc);
+        cpu.r[29]=call_stack_-0x80; cpu.r[31]=call_return; cpu.jump(pc);
+        for(size_t i=4;i<args.size();++i) write(cpu.r[29]+16+uint32_t(i-4)*4,args[i],4);   // o32 stack arguments
         ++nested_;
         uint64_t budget=50000000;
         while(cpu.pc!=call_return && stop_reason.empty() && budget--) {
@@ -159,10 +163,25 @@ public:
         in_vblank=start;
     }
     bool in_vblank{};
+    // iomanX devctl on a device registered by a loaded module (ops entry 23):
+    // devctl(iop_file_t*, name, cmd, arg, arglen, buf, buflen). Returns nullopt without that device.
+    std::optional<int32_t> deviceControl(const std::string& device,uint32_t cmd,const std::vector<uint8_t>& in,std::vector<uint8_t>& out) {
+        auto it=devices.find(device); if(it==devices.end()) return std::nullopt;
+        uint32_t ops=read(it->second+16,4),devctl=read(ops+23*4,4);
+        if(!devctl) return std::nullopt;
+        uint32_t scratch=sif.allocate(0x40+uint32_t(in.size())+uint32_t(out.size()));
+        uint32_t file=scratch,name=scratch+0x10,arg=scratch+0x40,buf=arg+uint32_t(in.size());
+        write(file,0,4); write(file+4,0,4); write(file+8,it->second,4); write(file+12,0,4);   // mode, unit 0, device, privdata
+        write(name,0,1);
+        if(!in.empty()) std::memcpy(sif.ram(arg,uint32_t(in.size())),in.data(),in.size());
+        auto result=int32_t(callGuest(devctl,{file,name,cmd,arg,uint32_t(in.size()),buf,uint32_t(out.size())}));
+        if(!out.empty()) std::memcpy(out.data(),sif.ram(buf,uint32_t(out.size())),out.size());
+        return result;
+    }
     // IOP reboot: every module, thread and kernel object disappears.
     void reset() {
         stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
-        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); cd_intr_event=0;
+        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear();
         active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; loaded.clear();
         sif.user_command=nullptr;
     }
@@ -479,7 +498,25 @@ inline void IopKernel::installCore() {
         uint32_t lbn=k.arg(0),count=k.arg(1),buf=k.arg(2);
         for(uint32_t i=0;i<count;++i) k.disc->read(lbn+i,k.sif.ram(buf+i*2048,2048));
         k.cd_reads+=count; k.ret(1);
+        // Read completion: cdvdman notifies the streaming module (stream flag 1 -> stm0, 2 -> stm1).
+        uint32_t cb=k.cd_stream_flag==1?k.cd_stm_callback[0]:k.cd_stream_flag==2?k.cd_stm_callback[1]:0;
+        if(!cb) return;
+        k.cd_pending_callbacks.push_back(cb);
+        if(k.cd_in_callback) return;                       // a callback started this read: run after it
+        k.cd_in_callback=true;
+        uint32_t saved_v0=k.cpu.r[2];
+        while(!k.cd_pending_callbacks.empty() && k.stop_reason.empty()) {
+            uint32_t next=k.cd_pending_callbacks.front(); k.cd_pending_callbacks.erase(k.cd_pending_callbacks.begin());
+            k.callGuest(next,{1});
+        }
+        k.cd_in_callback=false; k.cpu.r[2]=saved_v0;
     });
+    add("cdvdman",48,[](IopKernel& k){ k.cd_stm_callback[0]=k.arg(0); k.ret(0); });   // sceCdstm0Cb
+    add("cdvdman",49,[](IopKernel& k){ k.cd_stm_callback[1]=k.arg(0); k.ret(0); });   // sceCdstm1Cb
+    add("cdvdman",39,[](IopKernel& k){ k.ret(1); });                                  // sceCdBreak: nothing pending
+    add("cdvdman",46,[](IopKernel& k){ k.ret(1); });                                  // sceCdNop
+    add("cdvdman",61,[](IopKernel& k){ k.ret(1); });                                  // sceCdStStop
+    add("cdvdman",114,[](IopKernel& k){ k.ret(0); });                                 // _retzero
     add("cdvdman",8,[](IopKernel& k){ k.ret(0); });      // sceCdGetError: SCECdErNO
     add("cdvdman",11,[](IopKernel& k){ k.ret(0); });     // sceCdSync: no command in progress
     add("cdvdman",12,[](IopKernel& k){ k.ret(0x14); });  // sceCdGetDiskType: SCECdPS2DVD

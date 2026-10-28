@@ -3,12 +3,14 @@
 #include "iop_sif.h"
 #include <cctype>
 #include <ctime>
+#include <functional>
 namespace mp2r {
 // Native cdvdfsv (the EE libcdvd RPC servers) over the verified disc image. Version numbers
 // are the ones of CDVDFSV/CDVDMAN 2.35 shipped in the game's IOPRP280.IMG. Reads complete
 // synchronously: sector data goes straight to EE RAM, so no unaligned remainder is reported.
 // Packet layouts: PS2SDK common/include/libcdvd-rpc.h (protocol-compatible definitions).
-inline void registerCdvdServices(IopSif& iop,DiscImage* disc) {
+// stream: forwards NCMD 9/10 to the cdrom_stm0: devctl of CDVDSTM (cmd, packet) -> retres.
+inline void registerCdvdServices(IopSif& iop,DiscImage* disc,std::function<int32_t(uint32_t cmd,uint32_t packet,uint32_t size)> stream={}) {
     constexpr uint32_t version=0x0223;
     auto ee=[&iop](uint32_t address){ return iop.eeMemory()+(address&0x1ffffff); };
     auto put=[ee](uint32_t address,uint32_t value){ std::memcpy(ee(address),&value,4); };
@@ -40,7 +42,7 @@ inline void registerCdvdServices(IopSif& iop,DiscImage* disc) {
             default: sif.stop_reason="cdvd_scmd_unsupported fno="+std::to_string(function); return 0;
         }
     },"CDVDFSV");
-    iop.addServer(0x80000595,0x100,[disc,ee,put](IopSif& sif,int function,uint32_t buffer,uint32_t) -> uint32_t {
+    iop.addServer(0x80000595,0x100,[disc,ee,put,stream](IopSif& sif,int function,uint32_t buffer,uint32_t size) -> uint32_t {
         switch(function) {
             case 0x01: case 0x03: {                        // Read / DvdRead {lbn, sectors, eebuf, mode, align data, &curReadPos}
                 if(!disc) { sif.stop_reason="cdvd_read_without_disc"; return 0; }
@@ -54,6 +56,9 @@ inline void registerCdvdServices(IopSif& iop,DiscImage* disc) {
             case 0x05: case 0x06: case 0x07: case 0x08:    // Seek / Standby / Stop / Pause
                 sif.write32(buffer,1); return buffer;
             case 0x0e: sif.write32(buffer,2); return buffer;  // DiskReady
+            case 0x09: case 0x0a:                          // Stream / CddaStream -> devctl("cdrom_stm0:", 0x4396/0x4398)
+                if(!stream) { sif.stop_reason="cdvd_stream_without_cdvdstm"; return 0; }
+                sif.write32(buffer,uint32_t(stream(function==9?0x4396:0x4398,buffer,size))); return buffer;
             default: sif.stop_reason="cdvd_ncmd_unsupported fno="+std::to_string(function); return 0;
         }
     },"CDVDFSV");

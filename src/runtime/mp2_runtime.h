@@ -19,6 +19,7 @@
 #include "iop_sio2.h"
 #include "ee_dmac.h"
 #include "gs_gif.h"
+#include "ee_vif.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
@@ -164,13 +165,36 @@ public:
     mp2r::EeDmac dmac=[this]{
         mp2r::EeDmac d;
         d.sinks[2]=[this](const uint8_t* q,uint32_t n,uint32_t,uint32_t,bool has_tag){ if(!has_tag) gif.feed(q,n); };
-        d.sinks[1]=[this](const uint8_t* q,uint32_t n,uint32_t,uint32_t,bool has_tag){
-            uint32_t code=0; if(n) std::memcpy(&code,q,4);
-            dmac.stop_reason="vif1_requires_vu1 first_code=0x"+hex(code)+(has_tag?" (tag)":"");
-            throw std::runtime_error(dmac.stop_reason);
+        for(int n:{0,1}) d.sinks[n]=[this,n](const uint8_t* q,uint32_t count,uint32_t lo,uint32_t hi,bool has_tag){
+            auto& vif=n?vif1:vif0;
+            if(has_tag) { uint32_t w[2]={lo,hi}; vif.feed(reinterpret_cast<const uint8_t*>(w),2); }
+            else vif.feed(q,count*4);
+            if(!vif.stop_reason.empty()) { dmac.stop_reason=(n?"vif1: ":"vif0: ")+vif.stop_reason; throw std::runtime_error(dmac.stop_reason); }
         };
         return d;
     }();
+    mp2r::EeVif vif1=[this]{
+        mp2r::EeVif v; v.vu_code=special.vu(0x8000); v.code_size=0x4000; v.vu_data=special.vu(0xc000); v.data_size=0x4000;
+        v.direct=[this](const uint8_t* q,uint32_t n){ gif.feed(q,n); };
+        v.start_microprogram=[](uint32_t){ return false; };          // VU1 interpreter pending
+        return v;
+    }();
+    mp2r::EeVif vif0=[this]{
+        mp2r::EeVif v; v.vif1=false; v.vu_code=special.vu(0x0000); v.code_size=0x1000; v.vu_data=special.vu(0x4000); v.data_size=0x1000;
+        v.start_microprogram=[](uint32_t){ return false; };
+        return v;
+    }();
+    // FIFO writes (128-bit): VIF0 0x10004000, VIF1 0x10005000, GIF (PATH3) 0x10006000.
+    bool fifoWrite(R5900Context* cpu,uint32_t address,const uint8_t* q) {
+        auto p=address&0x1fffffffu;
+        if(p==0x10006000u) { gif.feed(q,1); }
+        else if(p==0x10005000u || p==0x10004000u) {
+            auto& vif=p==0x10005000u?vif1:vif0; vif.feed(q,4);
+            if(!vif.stop_reason.empty()) { reason=(p==0x10005000u?"vif1: ":"vif0: ")+vif.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
+        } else return false;
+        if(!gif.stop_reason.empty()) { reason=gif.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
+        return true;
+    }
     mp2r::GsGif gif=[this]{
         mp2r::GsGif g;
         g.write_register=[this](uint8_t reg,uint64_t value){
@@ -180,6 +204,25 @@ public:
         g.image=[this](const uint8_t*,uint32_t bytes){ gs_image_bytes+=bytes; };
         return g;
     }();
+    // GIF (0x10003000), VIF0 (0x10003800) and VIF1 (0x10003C00) register files. Transfers are
+    // processed synchronously by the DMAC, so STAT reads report idle FIFOs; FBRST.RST clears state.
+    std::unordered_map<uint32_t,uint32_t> unit_registers;
+    static bool unitRegister(uint32_t a) { auto p=a&0x1fffffffu; return p>=0x10003000u && p<0x10004000u; }
+    uint32_t unitRead(uint32_t a) {
+        auto p=a&0x1fffffffu;
+        if(p==0x10003020u || p==0x10003800u || p==0x10003c00u) return 0;   // GIF_STAT / VIF0_STAT / VIF1_STAT: idle
+        auto it=unit_registers.find(p); return it==unit_registers.end()?0:it->second;
+    }
+    void unitWrite(uint32_t a,uint32_t v) {
+        auto p=a&0x1fffffffu;
+        if((p==0x10003810u || p==0x10003c10u) && (v&1)) {                  // VIFn_FBRST.RST
+            uint32_t base=p&~0xffu; for(auto it=unit_registers.begin();it!=unit_registers.end();)
+                it=(it->first&~0xffu)==base?unit_registers.erase(it):std::next(it);
+            return;
+        }
+        if(p==0x10003000u && (v&1)) { for(uint32_t r=0x10003000u;r<0x10003100u;r+=0x10) unit_registers.erase(r); return; } // GIF_CTRL.RST
+        unit_registers[p]=v;
+    }
     std::array<uint64_t,0x64> gs_regs{};
     uint64_t gs_writes{},gs_image_bytes{};
     static bool sifChannelRegister(uint32_t address) { auto p=address&0x1fffffffu; return p>=0x1000c000u && p<0x1000d000u; }
@@ -302,7 +345,16 @@ public:
         auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
         auto files=[this](const std::string& path){ return readDiscFile(path); };
         mp2r::registerResidentIopServices(iop,loader,files);
-        mp2r::registerCdvdServices(iop,disc?&*disc:nullptr);
+        mp2r::registerCdvdServices(iop,disc?&*disc:nullptr,[this](uint32_t cmd,uint32_t packet,uint32_t size) -> int32_t {
+            std::vector<uint8_t> in(size),out(4);
+            std::memcpy(in.data(),iop.ram(packet,size),size);
+            auto r=iop_kernel.deviceControl("cdrom_stm",cmd,in,out);
+            if(!r) { iop.stop_reason="cdvd_stream_device_missing"; return 0; }
+            if(!iop_kernel.stop_reason.empty()) iop.stop_reason=iop_kernel.stop_reason;
+            int32_t retres; std::memcpy(&retres,out.data(),4);
+            log<<"CD stream devctl 0x"<<std::hex<<cmd<<std::dec<<" -> "<<*r<<" retres="<<retres<<'\n';
+            return *r<0?0:retres;
+        });
         fileio.resolve=[this](const std::string& path){ return resolveDiscPath(path); };
         fileio.tty=&log;
         fileio.install(iop);
@@ -640,7 +692,11 @@ public:
         if(gsPrivileged(a)) { gsWrite(a,v); return; }
         storeSpecial(cpu,a,v,"unsupported_mmio_write64");
     }
-    void Store128(uint8_t*,R5900Context* cpu,uint32_t a,__m128i v) { storeSpecial(cpu,a&~15u,v,"unsupported_mmio_write128"); }
+    void Store128(uint8_t*,R5900Context* cpu,uint32_t a,__m128i v) {
+        alignas(16) uint8_t q[16]; std::memcpy(q,&v,16);
+        if(fifoWrite(cpu,a&~15u,q)) return;
+        storeSpecial(cpu,a&~15u,v,"unsupported_mmio_write128");
+    }
     // Guest faults stop precisely; MP2R has no BIOS exception vectors to deliver them to.
     void handleBreak(uint8_t*,R5900Context* cpu) { stopAccess(cpu,"guest_break",cpu->pc); }
     void handleTrap(uint8_t*,R5900Context* cpu) { stopAccess(cpu,"guest_trap",cpu->pc); }
@@ -658,6 +714,7 @@ public:
         if((address&0x1fffffff)==0x1000e010) return dmac_stat;
         if(sifChannelRegister(address)) return sif_channel_registers[address&0x1fffffffu];
         if(dmac.owns(address)) return dmac.read(address);
+        if(unitRegister(address)) return unitRead(address);
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) return iop.getReg(((p-0x1000f200u)>>4)+1);
         if(gsPrivileged(address)) return uint32_t(gsRead(address&~7u)>>((address&4)*8));
         if((address&0x1fffffff)==0x1000f000) return intc.status();
@@ -674,6 +731,7 @@ public:
         if(special.write(address,&value,4)) return;
         if(auto p=address&0x1fffffffu; p>=0x1000f200u && p<=0x1000f230u && !(p&0xf)) { iop.setReg(((p-0x1000f200u)>>4)+1,value); return; }
         if(sifChannelRegister(address)) { sif_channel_registers[address&0x1fffffffu]=value; return; }
+        if(unitRegister(address)) { unitWrite(address,value); return; }
         if(dmac.owns(address)) {
             dmac.ram=guest_ram; dmac.scratchpad=special.scratchpad();
             int done=-1;

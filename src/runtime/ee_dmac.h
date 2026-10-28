@@ -19,17 +19,16 @@ public:
     using Sink=std::function<void(const uint8_t* qwords,uint32_t count,uint32_t tag_lo,uint32_t tag_hi,bool has_tag)>;
     std::array<Channel,10> channels{};
     std::array<Sink,10> sinks{};
-    uint32_t ctrl{},pcr{},sqwc{},rbsr{},rbor{},stadr{},enable=0x1201;   // D_ENABLER reset value
+    // D_CTRL starts with DMAE set: the EE kernel enables the DMAC during boot, before any game code.
+    uint32_t ctrl=1,pcr{},sqwc{},rbsr{},rbor{},stadr{},enable=0x1201;   // D_ENABLER reset value
     std::string stop_reason;
     uint8_t* ram{}; uint8_t* scratchpad{};
     uint64_t qwords_transferred{};
 
     static int channelOf(uint32_t p) {
-        if(p>=0x10008000u && p<0x10010000u && (p&0x0fffu)<0x0100u) {
-            if(p<0x1000d000u) return int((p-0x10008000u)>>12);
-            if(p<0x1000d400u) return 8;
-            if(p<0x1000d500u) return 9;
-        }
+        static constexpr uint32_t bases[10]={0x10008000u,0x10009000u,0x1000a000u,0x1000b000u,0x1000b400u,
+                                             0x1000c000u,0x1000c400u,0x1000c800u,0x1000d000u,0x1000d400u};
+        for(int n=0;n<10;++n) if(p>=bases[n] && p<bases[n]+0x100u) return n;
         return -1;
     }
     bool owns(uint32_t a) const {

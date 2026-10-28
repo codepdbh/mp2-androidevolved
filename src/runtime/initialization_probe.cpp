@@ -44,7 +44,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             if(host.checkpoints>=max_checkpoints) { host.reason="checkpoint_budget"; break; }
             if(cpu.pc==MP2InitializationRuntime::interrupt_return && host.interrupt) { host.finishHandler(&cpu); continue; }
             if(host.beginInterrupt(&cpu)) continue;
-            if(host.idle) {
+            if(host.idle && !host.interrupt) {     // handlers entered from idle run normally
                 if(cpu.pc!=MP2InitializationRuntime::idle_pc) throw std::runtime_error("Idle context lost");
                 host.runIop(200000); host.checkIop(&cpu);
                 if(!host.iop_kernel.idle()) continue;
