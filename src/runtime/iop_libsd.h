@@ -1,4 +1,5 @@
 #pragma once
+#include "emu_clock.h"
 #include "iop_kernel.h"
 #include <chrono>
 #include <map>
@@ -28,7 +29,7 @@ public:
     struct Voice { bool on{}; uint32_t ssa{},lsa{},nax{},pitch{}; double pos{}; };
     std::array<std::array<Voice,24>,2> voices{};
     std::array<uint32_t,2> endx{};
-    std::chrono::steady_clock::time_point voice_clock=std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point voice_clock=mp2r::EmuClock::now();
     void keyOn(uint32_t core,uint32_t mask) {
         for(uint32_t v=0;v<24;++v) if(mask&(1u<<v)) { auto& x=voices[core][v]; x.on=true; x.nax=x.ssa&0x1ffff0u; x.pos=0; endx[core]&=~(1u<<v); }
     }
@@ -58,7 +59,7 @@ public:
     std::array<bool,2> irq_armed{};
     uint32_t irq_pending{};
     std::array<bool,2> voice_trans_pending{};
-    unsigned trace_count{};
+    unsigned trace_count{},status_trace{};
     void finishVoiceTrans(IopKernel& k,uint32_t c) {
         voice_trans_pending[c]=false; trans_status[c]=1;
         if(k.log && ++trace_count<=60) *k.log<<"libsd VoiceTrans done ch="<<c<<" handler=0x"<<std::hex<<trans_handler[c]<<std::dec<<"\n";
@@ -66,7 +67,7 @@ public:
     }
     void tick(IopKernel& k) {
         for(uint32_t c=0;c<2;++c) if(voice_trans_pending[c]) finishVoiceTrans(k,c);
-        auto now=std::chrono::steady_clock::now();
+        auto now=mp2r::EmuClock::now();
         double samples=double(std::chrono::duration_cast<std::chrono::nanoseconds>(now-voice_clock).count())*48000e-9;
         advanceVoices(samples);
         voice_clock=now;
@@ -157,7 +158,7 @@ public:
                 default: k.stop("libsd_block_trans_mode "+std::to_string(mode)); return;     // READ / WRITE_FROM
             }
             if(mode&~0x1fu) { k.stop("libsd_block_trans_mode "+std::to_string(mode)); return; }
-            b={true,(mode&0x10)!=0,iop,size,0,0,std::chrono::steady_clock::now()};
+            b={true,(mode&0x10)!=0,iop,size,0,0,mp2r::EmuClock::now()};
             if((mode&0xf)==3 && size>=2 && k.arg(4)-iop>=size/2 && k.arg(4)-iop<size) b.half=1;   // starts in the second half
             trans_status[channel]=0; ++transfers;
             k.ret(0);
@@ -168,8 +169,10 @@ public:
             k.ret(voice_trans_pending[c]?0:1);
         });
         add(20,[this](IopKernel& k){                                                                            // sceSdBlockTransStatus
+            tick(k);
             const auto& b=blocks[k.arg(0)&1];
             k.ret(b.active?(b.half<<24)|((b.base+b.half*(b.size/2))&0xffffff):0);
+            if(k.log && (++status_trace<=40 || status_trace%2000==0)) *k.log<<"libsd BlockTransStatus #"<<status_trace<<" -> 0x"<<std::hex<<k.cpu.r[2]<<std::dec<<" halves="<<b.halves<<'\n';
         });
         add(23,[](IopKernel& k){ k.ret(0); });                                                                  // sceSdSetEffectAttr (no reverb yet)
         add(26,[this](IopKernel& k){ uint32_t c=k.arg(0)&1; k.ret(trans_handler[c]); trans_handler[c]=k.arg(1); trans_arg[c]=k.arg(2); });

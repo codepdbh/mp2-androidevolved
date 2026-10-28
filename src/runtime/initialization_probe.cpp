@@ -45,8 +45,13 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     uint32_t watch=[]{ const char* v=std::getenv("MP2R_WATCH"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
     std::deque<std::string> watch_log;
     uint32_t watch_value=[]{ const char* v=std::getenv("MP2R_WATCH_VALUE"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
+    // MP2R_WALL_LIMIT=<seconds>: stop with the full diagnostic report after that much real time.
+    double wall_limit=[]{ const char* v=std::getenv("MP2R_WALL_LIMIT"); return v?std::atof(v):0.0; }();
+    auto wall_start=std::chrono::steady_clock::now(); uint64_t wall_checks=0;
     try {
         while(!host.blocked && host.executions<max_executions) {
+            if(wall_limit>0 && (++wall_checks&0xfff)==0 &&
+               std::chrono::duration<double>(std::chrono::steady_clock::now()-wall_start).count()>wall_limit) { host.reason="wall_limit"; break; }
             if(watch && !std::getenv("MP2R_WATCH_VALUE")) {                      // every change, last 60 kept
                 uint32_t now=MP2InitializationRuntime::readWord(ram.data(),watch);
                 if(now!=watch_value) {
@@ -67,12 +72,18 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             if(host.beginInterrupt(&cpu)) continue;
             if(host.idle && !host.interrupt) {     // handlers entered from idle run normally
                 if(cpu.pc!=MP2InitializationRuntime::idle_pc) throw std::runtime_error("Idle context lost");
+                uint64_t iop_before=host.iop_kernel.instructions();
                 host.runIop(200000); host.checkIop(&cpu);
+                if(!mp2r::EmuClock::real_time) {                       // the IOP's own work while the EE waits (36.864 MHz)
+                    mp2r::EmuClock::advance((host.iop_kernel.instructions()-iop_before)*1000/36864*1000/1000);
+                    host.clockTimers();
+                }
                 if(!host.iop_kernel.idle()) continue;
-                auto waited=std::chrono::steady_clock::now()-host.idle_since;
-                if(host.idle_since.time_since_epoch().count()==0) host.idle_since=std::chrono::steady_clock::now();
+                auto waited=mp2r::EmuClock::now()-host.idle_since;
+                if(host.idle_since.time_since_epoch().count()==0) host.idle_since=mp2r::EmuClock::now();
                 else if(waited>std::chrono::seconds(5)) { host.reason="idle_without_interrupts"; break; }
-                std::this_thread::sleep_for(std::chrono::microseconds(200));
+                if(mp2r::EmuClock::real_time) std::this_thread::sleep_for(std::chrono::microseconds(200));
+                else { mp2r::EmuClock::advance(200000); host.clockTimers(); }   // idle: emulated time moves to the next event
                 continue;
             }
             host.idle_since={};
@@ -84,6 +95,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
                 auto* context=&cpu; SET_GPR_U32(context,31,frame.saved_ra);
             }
             ++host.executions;
+            cpu.vu0_vf[0]=_mm_set_ps(1.0f,0.0f,0.0f,0.0f);   // VU0 vf0 is the constant (0,0,0,1) in every context
             if(cpu.pc>=0x80076000 && cpu.pc<0x80076740) host.verifyKernelCopy(ram.data());
             if(cpu.pc>=0x80075000 && cpu.pc<0x80075300) host.verifyTlbCopy(ram.data());
             try { it->second(ram.data(),&cpu,&host); }
@@ -100,6 +112,10 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
         out.write(reinterpret_cast<const char*>(&cpu),sizeof cpu);
     }
     for(const auto& w:watch_log) log<<w<<'\n';
+    if(const char* dump=std::getenv("MP2R_DUMP_VU1")) {                       // VU1 code (16 KB) + data (16 KB)
+        std::ofstream out(dump,std::ios::binary);
+        out.write(reinterpret_cast<const char*>(host.special.vu(0x8000)),0x8000);
+    }
     if(const char* dump=std::getenv("MP2R_DUMP_IOP")) {                       // IOP RAM (private data)
         std::ofstream out(dump,std::ios::binary);
         out.write(reinterpret_cast<const char*>(host.iop.ram(0,mp2r::IopSif::ram_size)),std::streamsize(mp2r::IopSif::ram_size));
@@ -115,8 +131,10 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
         log<<'\n';
     }
     host.iop_kernel.dumpState(log);
+    for(auto [k,n]:host.vif1.unpack_formats) log<<"UNPACK cmd=0x"<<std::hex<<(k&0xff)<<" usn="<<((k>>8)&1)<<" mode="<<((k>>9)&3)<<" cycle="<<(k>>11)<<std::dec<<" count="<<n<<'\n';
+    for(auto [k,n]:host.iop.rpc_histogram) log<<"RPC sid=0x"<<std::hex<<(k>>32)<<" fno="<<std::dec<<(k&0xffffffff)<<" calls="<<n<<'\n';
     log<<"IPU commands="<<host.ipu.commands<<" macroblocks="<<host.ipu.macroblocks<<" GIF tags="<<host.gif.tags<<" GS image bytes="<<host.gs_image_bytes
-       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" VU1 programs="<<host.vu1.programs<<" XGKICKs="<<host.xgkicks<<" interrupts="<<host.interrupts_delivered<<"\n";
+       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" VU1 programs="<<host.vu1.programs<<" XGKICKs="<<host.xgkicks<<" GS prims="<<host.gs.primitives<<" pixels="<<host.gs.pixels<<" frames="<<host.frames_dumped<<" interrupts="<<host.interrupts_delivered<<"\n";
     {
         const auto& d4=host.dmac.channels[4]; const auto& d3=host.dmac.channels[3];
         log<<std::hex<<"IPU ctrl=0x"<<host.ipu.readCtrl()<<" bp=0x"<<host.ipu.readBp()<<" cmd=0x"<<host.ipu.readCmd()<<" queued="<<std::dec<<host.ipu.queuedQwords()
@@ -124,6 +142,12 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
            <<" D3 chcr=0x"<<d3.chcr<<" madr=0x"<<d3.madr<<" qwc=0x"<<d3.qwc<<" dstat=0x"<<host.dmac_stat<<std::dec<<'\n';
         for(std::size_t i=1;i<=host.ipu_recent.size();++i)
             if(auto& r=host.ipu_recent[(host.ipu_log+i)%host.ipu_recent.size()]; !r.empty() && i+8>host.ipu_recent.size()) log<<"recent "<<r<<'\n';
+    }
+    {
+        auto reg=[&](uint32_t a){ auto it=host.gs_registers.find(a); return it==host.gs_registers.end()?uint64_t(0):it->second; };
+        log<<std::hex<<"GS PMODE=0x"<<reg(0x12000000u)<<" SMODE2=0x"<<reg(0x12000020u)<<" DISPFB1=0x"<<reg(0x12000070u)<<" DISPLAY1=0x"<<reg(0x12000080u)
+           <<" DISPFB2=0x"<<reg(0x12000090u)<<" DISPLAY2=0x"<<reg(0x120000a0u)<<" FRAME_1=0x"<<host.gs.regs[0x4c]<<" FRAME_2=0x"<<host.gs.regs[0x4d]
+           <<" ZBUF_1=0x"<<host.gs.regs[0x4e]<<" SCISSOR_1=0x"<<host.gs.regs[0x40]<<" XYOFFSET_1=0x"<<host.gs.regs[0x18]<<" TEST_1=0x"<<host.gs.regs[0x47]<<std::dec<<'\n';
     }
     for(int id=1;id<256;++id) if(const auto* t=host.threads.get(id)) {
         auto it=host.thread_contexts.find(id);

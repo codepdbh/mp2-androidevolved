@@ -1,4 +1,5 @@
 #pragma once
+#include "emu_clock.h"
 #include "iop_cpu.h"
 #include "iop_sif.h"
 #include "disc_image.h"
@@ -362,7 +363,7 @@ private:
     // Fires due alarms in interrupt context; a non-zero return re-arms with that many ticks.
     void fireAlarms() {
         if(nested_ || alarms.empty()) return;
-        auto now=std::chrono::steady_clock::now();
+        auto now=mp2r::EmuClock::now();
         for(size_t i=0;i<alarms.size() && stop_reason.empty();) {
             if(alarms[i].due>now) { ++i; continue; }
             auto a=alarms[i]; alarms.erase(alarms.begin()+long(i));
@@ -373,7 +374,7 @@ private:
     void wakeDelayed() {
         fireAlarms();
         if(!nested_) for(auto& t:ticks) { t(*this); if(!stop_reason.empty()) return; }
-        auto now=std::chrono::steady_clock::now();
+        auto now=mp2r::EmuClock::now();
         for(auto& [id,t]:threads_) if(t.state==State::Waiting && t.wait==Wait::Delay && now>=t.wake_at) ready(t,0);
     }
     void finishRpc() {
@@ -476,9 +477,9 @@ inline void IopKernel::installCore() {
     add("thbase",26,wake);
     add("thbase",33,[](IopKernel& k){
         auto& t=k.threads_.at(k.current_);
-        t.wake_at=std::chrono::steady_clock::now()+std::chrono::microseconds(k.arg(0)); k.ret(0); k.block(Wait::Delay,0);
+        t.wake_at=mp2r::EmuClock::now()+std::chrono::microseconds(k.arg(0)); k.ret(0); k.block(Wait::Delay,0);
     });
-    auto now_clock=[]{ return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count())*36864/1000000; };
+    auto now_clock=[]{ return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(mp2r::EmuClock::now().time_since_epoch()).count())*36864/1000000; };
     add("thbase",34,[now_clock](IopKernel& k){ uint64_t c=now_clock(); k.write(k.arg(0),uint32_t(c),4); k.write(k.arg(0)+4,uint32_t(c>>32),4); k.ret(0); });
     add("thbase",43,[now_clock](IopKernel& k){ k.ret(uint32_t(now_clock())); });
     add("thbase",39,[](IopKernel& k){ uint64_t c=uint64_t(k.arg(0))*36864/1000; k.write(k.arg(1),uint32_t(c),4); k.write(k.arg(1)+4,uint32_t(c>>32),4); k.ret(0); });
@@ -678,7 +679,7 @@ inline void IopKernel::installCore() {
     // CancelAlarm(37)/iCancelAlarm(38)(handler, arg). Clock: 36.864 MHz system ticks.
     auto set_alarm=[](IopKernel& k){
         uint64_t ticks=k.read(k.arg(0),4)|uint64_t(k.read(k.arg(0)+4,4))<<32;
-        k.alarms.push_back({std::chrono::steady_clock::now()+std::chrono::nanoseconds(ticks*1000000/36864),k.arg(1),k.arg(2)});
+        k.alarms.push_back({mp2r::EmuClock::now()+std::chrono::nanoseconds(ticks*1000000/36864),k.arg(1),k.arg(2)});
         k.ret(0);
     };
     add("thbase",35,set_alarm); add("thbase",36,set_alarm);

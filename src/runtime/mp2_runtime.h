@@ -1,6 +1,7 @@
 #pragma once
 // Native EE platform services shared by the selected-function probe and the
 // whole-program build. Generated translation units see it through PS2Runtime.
+#include "emu_clock.h"
 #include "mp2_guest_runtime.h"
 #include "bootstrap_runtime.h"
 #include "ee_semaphores.h"
@@ -22,6 +23,7 @@
 #include "ee_vif.h"
 #include "ee_ipu.h"
 #include "ee_vu.h"
+#include "gs_renderer.h"
 #include "disc_image.h"
 #include <filesystem>
 #include <fstream>
@@ -126,10 +128,13 @@ public:
         throw GuestTransfer{}; // leave the generated caller before changing guest stacks
     }
     bool kernel_copy_verified{};
-    std::chrono::steady_clock::time_point last_clock=std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_clock=mp2r::EmuClock::now();
     uint64_t clock_fraction{};
+    // Emulated time per clockTimers call (each executor step, loop checkpoint and MMIO access).
+    static constexpr uint64_t work_ns=60;
     void clockTimers() {
-        auto now=std::chrono::steady_clock::now();
+        if(!mp2r::EmuClock::real_time) mp2r::EmuClock::advance(work_ns);
+        auto now=mp2r::EmuClock::now();
         auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(now-last_clock).count();
         last_clock=now;
         if(ns<0 || ns>300000000000LL) throw std::runtime_error("Invalid native clock interval");
@@ -141,7 +146,7 @@ public:
         if(timer2.advanceBusCycles(cycles)) intc.raise(11);
         if(timer3.advanceBusCycles(cycles)) intc.raise(12);
         auto blank=vblank.advance(uint64_t(ns));
-        if(blank&mp2r::EeVblank::Start) { intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
+        if(blank&mp2r::EeVblank::Start) { if(dump_frames && ++vblanks%frame_every==0) dumpFrame(); intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
         if(blank&mp2r::EeVblank::End) { intc.raise(3); iop_kernel.signalVblank(false); }
     }
     // ---- Interrupt delivery (INT0 = INTC, INT1 = DMAC), modelled on the EE kernel dispatcher:
@@ -192,9 +197,13 @@ public:
     mp2r::EeVif vif1=[this]{
         mp2r::EeVif v; v.vu_code=special.vu(0x8000); v.code_size=0x4000; v.vu_data=special.vu(0xc000); v.data_size=0x4000;
         v.direct=[this](const uint8_t* q,uint32_t n){ gif.feed(q,n); };
+        v.trace_high=[this](const char* t){ log<<t<<'\n'; };
         v.path3_unmasked=[this]{ if(dmac.pumpTo(2)==2) dmac_stat|=1u<<2; };
         v.start_microprogram=[this](uint32_t address){             // MSCAL/MSCALF (byte address) or MSCNT
+            uint64_t c0=vu1.cycles,k0=xgkicks; uint32_t from=address==0xffffffffu?vu1.pc:address/8;
+            vu1.trace=(vu_trace_index && vu1.programs+1==vu_trace_index)?&log:nullptr;
             if(!vu1.run(address==0xffffffffu?address:address/8)) { vif1.stop_reason="vu1: "+vu1.stop_reason; return true; }
+            if((++vu1_trace<=60 || vu1_trace%20000==0) && vu1_trace<=2000000) log<<"VU1 run pc=0x"<<std::hex<<from<<" end=0x"<<vu1.pc<<std::dec<<" cycles="<<(vu1.cycles-c0)<<" kicks="<<(xgkicks-k0)<<" top="<<vif1.top<<" itop="<<vif1.itop<<'\n';
             return true;
         };
         return v;
@@ -221,7 +230,8 @@ public:
         };
         return v;
     }();
-    uint64_t xgkicks{};
+    uint64_t vu_trace_index=[]{ const char* v=std::getenv("MP2R_VU_TRACE"); return v?uint64_t(std::strtoull(v,nullptr,10)):0ull; }();
+    uint64_t xgkicks{}; unsigned vu1_trace{},semaphores_created_log{};
     mp2r::EeVif vif0=[this]{
         mp2r::EeVif v; v.vif1=false; v.vu_code=special.vu(0x0000); v.code_size=0x1000; v.vu_data=special.vu(0x4000); v.data_size=0x1000;
         v.start_microprogram=[](uint32_t){ return false; };
@@ -239,13 +249,44 @@ public:
         if(!gif.stop_reason.empty()) { reason=gif.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
         return true;
     }
+    mp2r::GsRenderer gs;
+    // MP2R_DUMP_FRAMES=<dir> writes the displayed frame as BMP every MP2R_FRAME_EVERY vblanks (default 50).
+    const char* dump_frames=std::getenv("MP2R_DUMP_FRAMES");
+    unsigned frame_every=[]{ const char* v=std::getenv("MP2R_FRAME_EVERY"); return v?unsigned(std::max(1,std::atoi(v))):50u; }();
+    uint64_t vblanks{},frames_dumped{};
+    void dumpFrame() {
+        std::vector<uint32_t> px; uint32_t w=0,h=0;
+        auto reg=[this](uint32_t a){ auto it=gs_registers.find(a); return it==gs_registers.end()?uint64_t(0):it->second; };
+        uint64_t dispfb1=reg(0x12000070u),dispfb2=reg(0x12000090u);
+        if(std::getenv("MP2R_DUMP_BACK")) {                                 // diagnostics: show the FRAME_1 draw buffer
+            uint64_t fr=gs.regs[0x4c]; uint64_t fb=(fr&0x1ff)|(((fr>>16)&0x3f)<<9)|(((fr>>24)&0x1f)<<15);
+            dispfb1=dispfb2=fb;
+        }
+        if(!gs.frame(reg(0x12000000u),dispfb1,reg(0x12000080u),dispfb2,reg(0x120000a0u),px,w,h)) return;
+        char name[64]; std::snprintf(name,sizeof name,"/frame%05llu.bmp",(unsigned long long)vblanks);
+        std::ofstream out(std::string(dump_frames)+name,std::ios::binary);
+        uint32_t row=(w*3+3)&~3u,size=54+row*h;
+        uint8_t hdr[54]={'B','M'}; auto put=[&](int at,uint32_t v){ std::memcpy(hdr+at,&v,4); };
+        put(2,size); put(10,54); put(14,40); put(18,w); put(22,h); hdr[26]=1; hdr[28]=24; put(34,row*h);
+        out.write(reinterpret_cast<char*>(hdr),54);
+        std::vector<uint8_t> line(row);
+        for(uint32_t y=h;y-->0;) {
+            for(uint32_t x=0;x<w;++x) { uint32_t c=px[size_t(y)*w+x]; line[x*3]=uint8_t(c>>16); line[x*3+1]=uint8_t(c>>8); line[x*3+2]=uint8_t(c); }
+            out.write(reinterpret_cast<char*>(line.data()),row);
+        }
+        ++frames_dumped;
+    }
     mp2r::GsGif gif=[this]{
         mp2r::GsGif g;
         g.write_register=[this](uint8_t reg,uint64_t value){
             if(reg<gs_regs.size()) gs_regs[reg]=value;
-            if(++gs_writes<=32) log<<"GS reg 0x"<<std::hex<<int(reg)<<" = 0x"<<value<<std::dec<<'\n';
+            gs.write(reg,value);
+            if(!gs.stop_reason.empty()) throw std::runtime_error("gs: "+gs.stop_reason);
         };
-        g.image=[this](const uint8_t*,uint32_t bytes){ gs_image_bytes+=bytes; };
+        g.image=[this](const uint8_t* data,uint32_t bytes){
+            gs_image_bytes+=bytes; gs.image(data,bytes);
+            if(!gs.stop_reason.empty()) throw std::runtime_error("gs: "+gs.stop_reason);
+        };
         return g;
     }();
     // GIF (0x10003000), VIF0 (0x10003800) and VIF1 (0x10003C00) register files. Transfers are
@@ -436,6 +477,7 @@ public:
     explicit MP2InitializationRuntime(std::ostream& output,uint32_t table_base,unsigned limit)
         :syscall_table(table_base),log(output),checkpoint_limit(limit) {
         iop.log=&log; iop_kernel.log=&log; libsd.install(iop_kernel); sio2.install(iop_kernel);
+        if(const char* v=std::getenv("MP2R_GS_TRACE")) { gs.trace=&log; gs.trace_from=std::strtoull(v,nullptr,10); }   // MP2R_GS_TRACE=<n>: 40 primitives from the n-th
         iop_kernel.ee_memory=[this](uint32_t address){ return guest_ram+(address&0x1ffffff); };
         auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
         iop.on_reboot=[this](mp2r::IopSif&){ iop_kernel.reset(); registerIopServices(); };
@@ -757,7 +799,7 @@ public:
             id=semaphores.create(static_cast<int32_t>(readWord(ram,param+8)),
                 static_cast<int32_t>(readWord(ram,param+4)),readWord(ram,param+16),readWord(ram,param+20));
         SET_GPR_S32(cpu,2,id);
-        log<<"CreateSema param=0x"<<std::hex<<param<<std::dec<<" id="<<id<<'\n';
+        if(semaphores_created_log++<64) log<<"CreateSema param=0x"<<std::hex<<param<<std::dec<<" id="<<id<<'\n';
     }
     mp2r::EeSpecialMemory special;
     [[noreturn]] void stopAccess(R5900Context* cpu,const char* why,uint32_t address) {

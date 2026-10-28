@@ -2,8 +2,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 namespace mp2r {
@@ -26,6 +28,8 @@ public:
     std::array<uint32_t,4> row{},col{};
     uint64_t commands{},unpacked_qwords{},direct_qwords{},mpg_words{};
     bool vif1=true;
+    std::map<uint32_t,uint64_t> unpack_formats;                            // cmd | usn<<8 | mode<<9 | (cl<wl:1, cl>wl:2)<<11
+    std::function<void(const char*)> trace_high; unsigned trace_high_count{};
 
     void feed(const uint8_t* bytes,uint32_t count_words) {
         for(uint32_t i=0;i<count_words && stop_reason.empty();++i) { uint32_t w; std::memcpy(&w,bytes+i*4,4); word(w); }
@@ -92,8 +96,10 @@ private:
     bool filling() const { return cl<wl && (cycle_%wl)>=cl; }
     void beginUnpack(uint32_t w) {
         unpack_cmd_=w; total_=(w>>16)&0xff; if(!total_) total_=256;
+        ++unpack_formats[((w>>24)&0x7f)|(((w>>14)&1)<<8)|(mode<<9)|((cl<wl?1u:cl>wl?2u:0u)<<11)];
         num=total_; written_=0; cycle_=0;
         addr_=w&0x3ff; if((w>>15)&1) addr_+=tops;                                // FLG: relative to TOPS
+        if(trace_high && vif1 && (addr_&0x3ff)>=0x3e8 && trace_high_count<40) { ++trace_high_count; char t[96]; std::snprintf(t,sizeof t,"VIF1 UNPACK 0x%08x addr=0x%x num=%u cl=%u wl=%u",w,addr_,total_,cl,wl); trace_high(t); }
         pending_.clear();
         uint32_t vn=(w>>26)&3,vl=(w>>24)&3;
         uint32_t bits=(vn==3 && vl==3)?16:(vn+1)*(32>>vl);
@@ -116,7 +122,8 @@ private:
         std::array<uint32_t,4> v{};
         if(src) decode(src,v);
         uint32_t dest=(addr_*16)%data_size;
-        uint32_t m=(mask>>(row_index*8))&0xff;
+        // STMASK applies only to UNPACKs with the m bit (bit 28) set.
+        uint32_t m=((unpack_cmd_>>28)&1)?(mask>>(row_index*8))&0xff:0u;
         for(int i=0;i<4;++i) {
             uint32_t sel=src?(m>>(i*2))&3:2,value,current;
             std::memcpy(&current,vu_data+dest+i*4,4);

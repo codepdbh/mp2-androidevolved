@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <ostream>
 #include <string>
 namespace mp2r {
 // Vector unit micro mode interpreter (VU0 4 KB / VU1 16 KB data and code memory).
@@ -32,6 +33,7 @@ public:
     std::function<uint32_t()> top,itop;             // VIF1 TOP / VIF ITOP
     std::string stop_reason;
     uint64_t cycles{},programs{};
+    std::ostream* trace{};                          // per-pair trace of the current program
 
     EeVu() { vf[0]={0,0,0,1}; }
     // Runs from pair `start` (or the current pc for 0xffffffff, MSCNT) until the E bit.
@@ -44,6 +46,7 @@ public:
             uint32_t lower,upper; std::memcpy(&lower,code+at*8,4); std::memcpy(&upper,code+at*8+4,4);
             pc=at+1; ++cycles; settle();
             int64_t pending=branch; branch=-1;
+            if(trace) { *trace<<std::hex<<"VU "<<at<<" lo="<<lower<<" up="<<upper<<" vi:"; for(int r=1;r<16;++r) *trace<<' '<<vi[r]; *trace<<std::dec<<'\n'; }
             if(!pair(upper,lower,branch)) return false;
             if(pending>=0) pc=uint32_t(pending);
             if(ending) { finishPending(); return true; }

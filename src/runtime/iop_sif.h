@@ -1,4 +1,5 @@
 #pragma once
+#include "emu_clock.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -105,6 +106,7 @@ public:
     }
     // User-defined SIF commands (cid without bit 31) handled by loaded IOP modules.
     std::function<bool(uint32_t cid,uint32_t packet)> user_command;
+    std::map<uint64_t,uint64_t> rpc_histogram;                              // (sid<<32 | fno) -> calls
     void completeCall(uint64_t ticket,uint32_t reply) {
         auto it=pending_calls_.find(ticket);
         if(it==pending_calls_.end()) throw std::runtime_error("Unknown IOP RPC completion");
@@ -164,7 +166,7 @@ public:
     std::chrono::nanoseconds reply_latency{};
     void pump(uint8_t* ee,uint32_t& dmac_stat) {
         if(sif0_busy_ || sif0_.empty() || !ee_packet_buffer_) return;
-        if(sif0_.front().due>std::chrono::steady_clock::now()) return;   // the device has not finished yet
+        if(sif0_.front().due>mp2r::EmuClock::now()) return;   // the device has not finished yet
         auto out=std::move(sif0_.front()); sif0_.pop_front();
         if(!out.data.empty()) std::memcpy(ee+(out.data_dest&0x1ffffff),out.data.data(),out.data.size());
         if(log && (out.data_dest&0x1ffffff)>=0x1ff0000u) *log<<"SIF0 data to stack 0x"<<std::hex<<out.data_dest<<" size=0x"<<out.data.size()<<std::dec<<'\n';
@@ -218,7 +220,7 @@ private:
                 const Server* server=nullptr;
                 for(auto& [sid,s]:servers_) if(s.token==sd) server=&s;
                 if(!server) { stop_reason="iop_rpc_call_unbound sd=0x"+hex(sd); return; }
-                ++rpc_calls;
+                ++rpc_calls; ++rpc_histogram[(uint64_t(server->sid)<<32)|fno];
                 CallState state{rec,pkt,rpc,cd,recvbuf,rsize,rmode};
                 if(server->async) {
                     auto ticket=next_ticket_++; pending_calls_[ticket]=state;
@@ -228,7 +230,7 @@ private:
                 uint32_t reply=server->handler(*this,int(fno),server->buffer,ssize);
                 if(!stop_reason.empty()) return;
                 finishCall(state,reply);
-                if(reply_latency.count() && !sif0_.empty()) sif0_.back().due=std::chrono::steady_clock::now()+reply_latency;
+                if(reply_latency.count() && !sif0_.empty()) sif0_.back().due=mp2r::EmuClock::now()+reply_latency;
                 return;
             }
             case 0x8000000c: {                                                      // RPC_RDATA
