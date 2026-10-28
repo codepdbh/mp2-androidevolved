@@ -151,6 +151,7 @@ private:
         };
         uint32_t n=vn+1;
         if(n==1) { uint32_t x=get(0); v={x,x,x,x}; return; }                       // S-xx broadcast
+        if(n==2) { uint32_t x=get(0),y=get(1); v={x,y,x,y}; return; }             // V2: hardware duplicates XY into ZW
         for(uint32_t i=0;i<4;++i) v[i]=i<n?get(i):0;
     }
 };

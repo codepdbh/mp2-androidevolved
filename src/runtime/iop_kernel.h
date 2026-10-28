@@ -81,6 +81,7 @@ public:
     }
     // Device models that raise IOP interrupts on their own clock (e.g. SPU2 ADMA) poll here.
     std::vector<std::function<void(IopKernel&)>> ticks;
+    uint64_t dma_completions_delivered{};
     struct PendingCall { uint32_t sd,fno,buf,size; uint64_t ticket; };
 
     IopSif& sif;
@@ -90,6 +91,8 @@ public:
     std::string stop_reason;
     std::map<std::pair<std::string,int>,Hle> hle;           // native libraries
     std::vector<std::string> loaded;
+    struct ResidentModule { uint32_t base{},size{},entry{},gp{}; bool removable{},stopped{}; };
+    std::map<int,ResidentModule> resident_modules;
     DiscImage* disc{};
     uint64_t cd_reads{};
     int cd_stream_flag{},cd_intr_event{};
@@ -127,7 +130,7 @@ public:
     void stop(std::string why) { if(stop_reason.empty()) stop_reason=std::move(why); cpu.stop_reason=stop_reason; }
 
     // ---------------- module loading (IRX: ELF type 0xFF80 with .iopmod and REL sections)
-    bool loadModule(const std::vector<uint8_t>& irx,const std::string& name,const std::string& args) {
+    bool loadModule(const std::vector<uint8_t>& irx,const std::string& name,const std::string& args,int module_id=0) {
         auto u16=[&](size_t o){ uint16_t v; std::memcpy(&v,irx.data()+o,2); return v; };
         auto u32=[&](size_t o){ uint32_t v; std::memcpy(&v,irx.data()+o,4); return v; };
         if(irx.size()<52 || u32(0)!=0x464c457fu || u16(16)!=0xff80) { stop("iop_module_not_irx "+name); return false; }
@@ -172,8 +175,66 @@ public:
         for(auto& s:list) { if(argc>=15) break; write(argv+4*argc++,strings,4); std::memcpy(sif.ram(strings,s.size()+1),s.c_str(),s.size()+1); strings+=uint32_t(s.size()+1); }
         write(argv+4*argc,0,4);
         uint32_t result=callGuest(base+entry,{argc,argv},base+gp);
+        sif.freeBlock(argv);
+        if(module_id>0 && stop_reason.empty() && (result&3)!=1)
+            resident_modules[module_id]={base,memsz+bss+64,base+entry,base+gp,(result&3)==2,false};
         if(log) *log<<"IOP module "<<name<<" base=0x"<<std::hex<<base<<" entry=0x"<<base+entry<<" result="<<result<<std::dec<<'\n';
         return stop_reason.empty() && (result&3)!=1; // NO_RESIDENT_END keeps nothing loaded
+    }
+    std::pair<int,int> stopModule(int id,const std::string& args) {
+        auto found=resident_modules.find(id);
+        if(found==resident_modules.end()) return {-202,0}; // KE_UNKNOWN_MODULE
+        auto& module=found->second;
+        if(module.stopped) return {-208,0}; // KE_ALREADY_STOPPED
+        if(!module.removable) return {-211,0}; // KE_NOT_REMOVABLE
+        std::vector<std::string> list{"other"};
+        for(size_t at=0;at<args.size();) {
+            auto end=args.find('\0',at);
+            list.push_back(args.substr(at,end==std::string::npos?end:end-at));
+            if(end==std::string::npos) break; at=end+1;
+        }
+        uint32_t bytes=uint32_t((list.size()+1)*4+6+args.size()+1);
+        uint32_t argv=sif.allocate(bytes),strings=argv+uint32_t((list.size()+1)*4);
+        for(unsigned n=0;n<list.size();++n) {
+            write(argv+n*4,strings,4);
+            std::memcpy(sif.ram(strings,list[n].size()+1),list[n].c_str(),list[n].size()+1);
+            strings+=uint32_t(list[n].size()+1);
+        }
+        write(argv+uint32_t(list.size()*4),0,4);
+        int result=int32_t(callLoaderThread(module.entry,{uint32_t(-int(list.size())),argv,0,0},module.gp));
+        sif.freeBlock(argv);
+        if(!stop_reason.empty()) return {-209,result};
+        switch(result&3) {
+            case 1: module.stopped=true; return {0,result};
+            case 0: module.removable=false; return {-209,result};
+            default: return {-209,result};
+        }
+    }
+    // Unlike interrupt callbacks, a module's stop entry is allowed to sleep or
+    // wait for other IOP threads. Give it a real loader-thread context.
+    uint32_t callLoaderThread(uint32_t entry,const std::vector<uint32_t>& args,uint32_t gp) {
+        if(current_) { save(threads_.at(current_)); current_=0; }
+        Thread loader; loader.id=next_id_++; loader.entry=loader.pc=entry;
+        loader.stack_size=0x4000; loader.stack=sif.allocate(loader.stack_size);
+        loader.gp=loader.r[28]=gp; loader.r[29]=loader.stack+loader.stack_size-0x80;
+        loader.r[31]=thread_exit; loader.priority=loader.initial_priority=8;
+        for(unsigned n=0;n<args.size() && n<4;++n) loader.r[4+n]=args[n];
+        loader.state=State::Ready; loader.order=++order_;
+        const int id=loader.id; threads_[id]=loader;
+        unsigned remaining=25000;
+        while(threads_.at(id).state!=State::Dormant && stop_reason.empty() && remaining--) {
+            uint64_t before=cpu.instructions;
+            run(2048);
+            if(!mp2r::EmuClock::real_time) {
+                const uint64_t work=cpu.instructions-before;
+                mp2r::EmuClock::advance(work?std::max(uint64_t(1),work*1000000/36864):200000);
+            }
+        }
+        if(threads_.at(id).state!=State::Dormant && stop_reason.empty()) stop("iop_loader_thread_budget entry=0x"+hex(entry));
+        if(current_) { save(threads_.at(current_)); current_=0; }
+        uint32_t result=threads_.at(id).r[2];
+        threads_.erase(id); sif.freeBlock(loader.stack);
+        return result;
     }
     // Runs guest code to its return on a private stack; it must not block.
     uint32_t callGuest(uint32_t pc,std::vector<uint32_t> args,std::optional<uint32_t> gp={}) {
@@ -201,7 +262,7 @@ public:
             preempt();
             if(!current_ && !schedule()) return;
             auto& t=threads_.at(current_);
-            if(cpu.pc==thread_exit) { t.state=State::Dormant; current_=0; continue; }
+            if(cpu.pc==thread_exit) { save(t); t.state=State::Dormant; current_=0; continue; }
             if(cpu.pc==rpc_return) { finishRpc(); continue; }
             if(cpu.pc==trace_at && trace_at) { trace_at=0; trace_left=3000; if(log) *log<<"IOP trace start thread "<<current_<<std::endl; }
             uint32_t before=cpu.pc;
@@ -270,8 +331,9 @@ public:
     void reset() {
         stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
         queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); alarms.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear();
-        active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; devctl_scratch_=0; loaded.clear();
+        active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; devctl_scratch_=0; loaded.clear(); resident_modules.clear();
         sif.user_command=nullptr;
+        dma_completions_.clear(); interrupts_enabled_=true;
     }
     bool idle() const {
         for(auto& [id,t]:threads_) if(t.state==State::Ready) return false;
@@ -293,6 +355,9 @@ private:
     std::optional<PendingCall> active_call_;
     std::optional<Thread> rpc_saved_;
     int next_id_=1,current_{}; uint64_t order_{}; int nested_{};
+    struct DmaCompletion { uint32_t handler,argument,gp; };
+    std::deque<DmaCompletion> dma_completions_;
+    bool interrupts_enabled_{true};
     uint32_t call_stack_{},devctl_scratch_{};
     struct Snapshot { std::array<uint32_t,32> r; uint32_t pc,next_pc,hi,lo; };
     Snapshot snapshot() const { return {cpu.r,cpu.pc,cpu.next_pc,cpu.hi,cpu.lo}; }
@@ -371,7 +436,19 @@ private:
             if(next) alarms.push_back({now+std::chrono::nanoseconds(uint64_t(next)*1000000/36864),a.handler,a.arg});
         }
     }
+    void fireDmaCompletions() {
+        if(nested_ || !interrupts_enabled_ || (current_ && cpu.next_pc!=cpu.pc+4)) return;
+        auto count=dma_completions_.size();
+        while(count-- && !dma_completions_.empty() && stop_reason.empty()) {
+            auto completion=dma_completions_.front(); dma_completions_.pop_front();
+            interrupts_enabled_=false;
+            callGuest(completion.handler,{completion.argument},completion.gp);
+            interrupts_enabled_=true;
+            ++dma_completions_delivered;
+        }
+    }
     void wakeDelayed() {
+        fireDmaCompletions();
         fireAlarms();
         if(!nested_) for(auto& t:ticks) { t(*this); if(!stop_reason.empty()) return; }
         auto now=mp2r::EmuClock::now();
@@ -424,9 +501,12 @@ inline void IopKernel::installCore() {
     // modload 13 (IOPRP280 MODLOAD: stores the KELF path check callback MCMAN uses for mc0: modules).
     // MP2R loads modules only from the disc, so the callback is kept and never invoked.
     add("modload",13,[](IopKernel& k){ k.kelf_path_callback=k.arg(0); });
-    // intrman: interrupts are delivered synchronously by MP2R, so the critical sections are no-ops.
-    add("intrman",17,[](IopKernel& k){ if(k.arg(0)) k.write(k.arg(0),0,4); k.ret(0); });
-    add("intrman",18,[](IopKernel& k){ k.ret(0); });
+    // Preserve critical sections so completed SIF DMAs notify after CpuResumeIntr.
+    add("intrman",17,[](IopKernel& k){
+        if(k.arg(0)) k.write(k.arg(0),k.interrupts_enabled_?1:0,4);
+        k.interrupts_enabled_=false; k.ret(0);
+    });
+    add("intrman",18,[](IopKernel& k){ k.interrupts_enabled_=k.arg(0)!=0; k.ret(0); });
     // EnableIntr/DisableIntr(irq, &old): device interrupts reach handlers through the native
     // device models (libsd, cdvdman, SIO2), so only the enable state is kept.
     add("intrman",6,[](IopKernel& k){ k.irq_enabled[k.arg(0)&63]=true; k.ret(0); });
@@ -629,7 +709,12 @@ inline void IopKernel::installCore() {
         }
         k.ret(1);
     };
-    add("sifman",7,set_dma); add("sifman",32,set_dma);
+    add("sifman",7,set_dma);
+    add("sifman",32,[set_dma](IopKernel& k){
+        uint32_t count=k.arg(1),handler=k.arg(2),argument=k.arg(3),gp=k.cpu.r[28];
+        set_dma(k);
+        if(count && handler && k.cpu.r[2]) k.dma_completions_.push_back({handler,argument,gp});
+    });
     add("sifman",5,[](IopKernel& k){ k.ret(0); });
     add("sifman",8,[](IopKernel& k){ k.ret(uint32_t(-1)); });
     add("sifman",29,[](IopKernel& k){ k.ret(1); });

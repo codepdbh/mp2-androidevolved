@@ -86,10 +86,17 @@ public:
         if(!(c.chcr&0x100) || !sources[n]) return -1;
         if(((c.chcr>>2)&3)!=0) { stop_reason="dma_to_memory_mode_unsupported"; throw std::runtime_error(stop_reason); }
         while(c.qwc) {
-            uint8_t* dst=const_cast<uint8_t*>(memory(c.madr,1));
-            uint32_t got=sources[n](dst,1);
+            // Drain the available peripheral output in one contiguous batch.
+            // IPU CSC may queue a whole RGB frame: consuming one qword at a time
+            // made its vector front-erases quadratic in the frame size.
+            uint32_t size=(c.madr&0x80000000u)?0x4000u:0x2000000u;
+            uint32_t offset=c.madr&((c.madr&0x80000000u)?0x3ff0u:0x1fffff0u);
+            uint32_t count=std::min(c.qwc,(size-offset)/16);
+            uint8_t* dst=const_cast<uint8_t*>(memory(c.madr,count));
+            uint32_t got=sources[n](dst,count);
+            if(got>count) throw std::runtime_error("DMA source exceeded requested capacity");
             if(!got) return -1;                                    // wait for more peripheral output
-            c.madr+=16; --c.qwc; ++qwords_transferred;
+            c.madr+=got*16; c.qwc-=got; qwords_transferred+=got;
         }
         c.chcr&=~0x100u; return n;
     }

@@ -33,5 +33,23 @@ int main() {
     dmac.sinks[1]=dmac.sinks[2];
     qw(0x4000,0x70000000,0); dmac.write(0x10009030,0x4000);
     dmac.write(0x10009000,0x145); check(tags==1,"TTE forwards the tag");
+    unsigned calls=0; uint32_t emitted=0,available=8192;
+    dmac.sources[3]=[&](uint8_t* dst,uint32_t capacity){
+        ++calls; auto count=std::min(capacity,available); available-=count;
+        for(uint32_t i=0;i<count;++i) { std::memset(dst+i*16,int((emitted+i)&255),16); } emitted+=count; return count;
+    };
+    dmac.write(0x1000b010,0x10000); dmac.write(0x1000b020,8192);
+    check(dmac.write(0x1000b000,0x100)==3 && calls==1 && dmac.channels[3].madr==0x30000,"large peripheral output drains as one batch");
+    for(uint32_t i=0;i<8192;++i) check(ram[0x10000+i*16]==uint8_t(i),"batched DMA preserves qword order");
+    calls=0; available=2; emitted=0;
+    dmac.write(0x1000b010,0x40000); dmac.write(0x1000b020,5);
+    check(dmac.write(0x1000b000,0x100)==-1 && dmac.channels[3].qwc==3 && dmac.channels[3].madr==0x40020,"partial output waits with exact remaining QWC/MADR");
+    available=3; check(dmac.pump(3)==3 && dmac.channels[3].qwc==0,"partial output resumes and completes");
+    calls=0; emitted=0; available=3;
+    dmac.write(0x1000b010,0x80003ff0); dmac.write(0x1000b020,3);
+    check(dmac.write(0x1000b000,0x100)==3 && calls==2 && spr[0x3ff0]==0 && spr[0]==1 && spr[16]==2,"batch splits at scratchpad wrap");
+    calls=0; emitted=0; available=3;
+    dmac.write(0x1000b010,0x1fffff0); dmac.write(0x1000b020,3);
+    check(dmac.write(0x1000b000,0x100)==3 && calls==2 && ram[0x1fffff0]==0 && ram[0]==1 && ram[16]==2,"batch splits at guest RAM wrap");
     std::cout<<"PASS: DMAC normal/source-chain (cnt ref call ret end), ASR stack, STR completion, TTE\n";
 }

@@ -5,6 +5,7 @@ import android.os.*;
 import android.view.MotionEvent;
 
 public final class TouchInstrumentation extends Instrumentation {
+    private boolean gameBenchmark;
     private static void check(boolean ok,String message) { if(!ok) throw new AssertionError(message); }
     private void event(TouchDiagnosticView view,int action,int[] ids,float[] x,float[] y) {
         MotionEvent.PointerProperties[] props=new MotionEvent.PointerProperties[ids.length];
@@ -17,8 +18,9 @@ public final class TouchInstrumentation extends Instrumentation {
         MotionEvent e=MotionEvent.obtain(now,now,action,ids.length,props,coords,0,0,1,1,0,0,0,0);
         view.onTouchEvent(e); e.recycle();
     }
-    @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
+    @Override public void onCreate(Bundle args) { super.onCreate(args); gameBenchmark=args!=null && "game".equals(args.getString("mode")); start(); }
     @Override public void onStart() {
+        if(gameBenchmark) { benchmarkGame(); return; }
         Bundle result=new Bundle(); DiagnosticActivity activity=null;
         try {
             Intent intent=new Intent(getTargetContext(),DiagnosticActivity.class); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -71,5 +73,32 @@ public final class TouchInstrumentation extends Instrumentation {
         } catch(Throwable error) {
             result.putString("result","FAIL: "+error); result.putBoolean("passed",false); finish(Activity.RESULT_CANCELED,result);
         } finally { if(activity!=null) { DiagnosticActivity target=activity; runOnMainSync(target::finish); } }
+    }
+    private void benchmarkGame() {
+        Bundle result=new Bundle(); Activity activity=null;
+        int code=Activity.RESULT_CANCELED;
+        try {
+            Intent intent=new Intent(getTargetContext(),GameActivity.class); intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); intent.putExtra("profile",true);
+            activity=startActivitySync(intent); waitForIdleSync();
+            SystemClock.sleep(5000);
+            long start=NativeBridge.frameCount(),time=SystemClock.elapsedRealtime();
+            SystemClock.sleep(15000);
+            long elapsed=SystemClock.elapsedRealtime()-time,frames=NativeBridge.frameCount()-start;
+            check(frames>0,"No presented frames during benchmark");
+            NativeBridge.setPaused(true); SystemClock.sleep(300);
+            long paused=NativeBridge.frameCount(); SystemClock.sleep(700);
+            check(NativeBridge.frameCount()==paused,"Paused runtime continues to present frames");
+            NativeBridge.setPaused(false); SystemClock.sleep(1500);
+            check(NativeBridge.frameCount()>paused,"Runtime did not resume presentation");
+            result.putString("result","PASS: frames="+frames+" elapsed_ms="+elapsed+" presented_fps="+(frames*1000.0/elapsed)+"; pause/resume passed");
+            result.putBoolean("passed",true); code=Activity.RESULT_OK;
+        } catch(Throwable error) {
+            result.putString("result","FAIL: "+error); result.putBoolean("passed",false);
+        } finally {
+            NativeBridge.stopGame();
+            if(activity!=null) { Activity target=activity; runOnMainSync(target::finish); }
+            SystemClock.sleep(1500);
+        }
+        finish(code,result);
     }
 }

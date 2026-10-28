@@ -1,4 +1,32 @@
-# Estado actual — iteración 6, 2026-10-27
+# Estado actual — programa completo instalado en S25, 2026-10-28
+
+Programa completo ARM64 enlazado e instalado. Vídeo real, SurfaceView y entrada
+SIO2 comprobados en el S25. Corregido el drenaje cuadrático de IPU_FROM: prueba
+de arranque instrumentada de 3,33 a 16,13 presentaciones/s; no son FPS de gameplay.
+HUD reducido y oculto por defecto, activación manual. GS todavía en CPU y menús
+invertidos. Audio PCM/AAudio parcial y blend de campos en validación para 0.9.
+Ver [sesión S25](SESSION_S25_2026-10-28.md). **Sin gameplay validado.**
+
+# Historial — revisión anterior del avance del usuario
+
+Continuación gráfica: corregidos Q/PRE de GIF y el sesgo intra IPU que
+saturaba el vídeo a magenta. Captura de arranque verificada: «PRESENTS»
+blanco sobre negro. Persisten campos duplicados y pantalla negra al avanzar
+al menú.21 CTest pasan; objetos modificados compilados para ARM64.
+
+Se retomó `c957727`: programa completo registrado (20876 funciones), IOP/IRX,
+CD/streaming, IPU, VIF/VU, audio IOP y GS por software. Se corrigió el callback
+SIF DMA omitido que bloqueaba al auxiliar del mando. La última ejecución
+registra2562 lecturas del mando y1825 callbacks completados.
+
+21 CTest y2 unittest pasan. Correcciones GIF PACKED, mezcla de circuitos GS,
+prueba de máscara VIF y compilación Clang ARM64. Nueva entrada de mando por
+callback y experimento Cross optativo. **Persisten defectos gráficos; no es
+jugable.** No se instaló una APK nueva del programa completo.
+
+Detalle y límites: [REVIEW_2026-10-28.md](REVIEW_2026-10-28.md).
+
+# Historial — iteración 6, 2026-10-27
 
 La APK v0.5 completa InitSys original: configuración OSD, copia verificada de los
 servicios TLB y modelo TLB R5900 de 48 entradas. El crt0 llega a main() (0x0042F7E0)

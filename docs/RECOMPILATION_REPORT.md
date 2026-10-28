@@ -1,4 +1,15 @@
-# Recompilación — estado tras iteración 5
+# Recompilación — revisión del avance del usuario, 2026-10-28
+
+Actualización posterior: se corrigieron 39 instrucciones VSUB a VF0 en 20 funciones mediante un posprocesador verificable e idempotente. El ELF original conserva su hash. Pasan 25 CTest; esto no valida gameplay ni resuelve los menús invertidos.
+
+El manifiesto de programa completo registra20876 funciones y467266 PCs, sin
+guards pendientes. Esta revisión corrigió runtime y pruebas; conserva los
+cuerpos recompilados y el SHA-256 del ELF.21 CTest pasan y los objetos del runtime
+compilan para ARM64. Registro completo no significa ejecución correcta de todo
+el juego. Persisten defectos gráficos; sin gameplay validado.
+[Detalle de la revisión](REVIEW_2026-10-28.md).
+
+# Historial — iteración 5
 
 51 cuerpos originales seleccionados:41 del ELF PAL y10 del bloque de alarmas;
 182 PCs registrados, sin stubs/skips ni instrucciones parcheadas. Ambas

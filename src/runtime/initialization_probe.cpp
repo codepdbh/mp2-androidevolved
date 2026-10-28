@@ -19,7 +19,7 @@ uint16_t half(const uint8_t* bytes,std::size_t size,std::size_t offset) {
 }
 InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std::ostream& log,std::string_view boot_path,
                                      uint32_t kernel_table_base,unsigned max_checkpoints,uint64_t max_executions,
-                                     std::string_view disc_root) {
+                                     std::string_view disc_root,const RuntimeCallbacks& callbacks) {
     if(bytes!=4984624 || word(elf,bytes,0)!=0x464c457fu || elf[4]!=1 || elf[5]!=1 || half(elf,bytes,18)!=8 || word(elf,bytes,24)!=0x100008)
         throw std::runtime_error("Unexpected PAL ELF layout; caller must verify SHA-256");
     std::vector<uint8_t> ram(PS2_RAM_SIZE,0);
@@ -39,6 +39,17 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     if(max_checkpoints==0) throw std::runtime_error("Zero checkpoint budget");
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); host.registerGuestFunctions();
     host.boot_path=boot_path; host.guest_ram=ram.data();
+    host.present_frame=callbacks.present_frame;
+    host.compensate_scene_preview=callbacks.compensate_scene_preview;
+    host.profile=host.gs.profile=callbacks.profile;
+    if(callbacks.play_audio) host.libsd.stream_pcm=[&](unsigned core,const int16_t* pcm,uint32_t frames){
+        if(core==0) callbacks.play_audio(pcm,frames); // stream tap; full SPU2/core mixing remains separate
+    };
+    if(callbacks.poll_pad) host.sio2.sample_input=[&](unsigned port,DualShock2& pad){
+        if(port!=0) return;
+        auto input=callbacks.poll_pad();
+        pad.buttons=uint16_t(~input.pressed); pad.sticks=input.sticks; pad.pressure=input.pressure;
+    };
     if(!disc_root.empty()) { host.disc_root=std::filesystem::path(disc_root); host.disc.emplace(host.disc_root); host.iop_kernel.disc=&*host.disc; host.registerIopServices(); }
     // Diagnostics: MP2R_WATCH=<hex addr> with MP2R_WATCH_VALUE=<hex> reports, between executor steps,
     // the first time that RAM word takes the value (pc and recent branches).
@@ -47,9 +58,13 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     uint32_t watch_value=[]{ const char* v=std::getenv("MP2R_WATCH_VALUE"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
     // MP2R_WALL_LIMIT=<seconds>: stop with the full diagnostic report after that much real time.
     double wall_limit=[]{ const char* v=std::getenv("MP2R_WALL_LIMIT"); return v?std::atof(v):0.0; }();
-    auto wall_start=std::chrono::steady_clock::now(); uint64_t wall_checks=0;
+    auto wall_start=std::chrono::steady_clock::now(); uint64_t wall_checks=0,callback_checks=0;
+    std::map<uint32_t,std::pair<uint64_t,uint64_t>> sampled_functions; // samples, elapsed ns
+    uint32_t sampling_random=0x9e3779b9;
     try {
         while(!host.blocked && host.executions<max_executions) {
+            if(callbacks.break_pc && cpu.pc==callbacks.break_pc) { host.reason="breakpoint"; host.blocked_source=host.source; break; }
+            if((callback_checks++&0x3ff)==0 && callbacks.should_stop && callbacks.should_stop()) { host.reason="requested_stop"; break; }
             if(wall_limit>0 && (++wall_checks&0xfff)==0 &&
                std::chrono::duration<double>(std::chrono::steady_clock::now()-wall_start).count()>wall_limit) { host.reason="wall_limit"; break; }
             if(watch && !std::getenv("MP2R_WATCH_VALUE")) {                      // every change, last 60 kept
@@ -98,13 +113,32 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             cpu.vu0_vf[0]=_mm_set_ps(1.0f,0.0f,0.0f,0.0f);   // VU0 vf0 is the constant (0,0,0,1) in every context
             if(cpu.pc>=0x80076000 && cpu.pc<0x80076740) host.verifyKernelCopy(ram.data());
             if(cpu.pc>=0x80075000 && cpu.pc<0x80075300) host.verifyTlbCopy(ram.data());
-            try { it->second(ram.data(),&cpu,&host); }
+            try {
+                bool sample=false; uint64_t ignored=0; uint64_t* elapsed=&ignored;
+                if(callbacks.profile) {
+                    sampling_random^=sampling_random<<13; sampling_random^=sampling_random>>17; sampling_random^=sampling_random<<5;
+                    sample=(sampling_random&1023)==0;
+                    if(sample) { auto& entry=sampled_functions[cpu.pc]; ++entry.first; elapsed=&entry.second; }
+                }
+                RuntimeTimer timing(sample,*elapsed);
+                it->second(ram.data(),&cpu,&host);
+            }
             catch(const MP2InitializationRuntime::GuestTransfer&) { continue; }
         }
         if(!host.blocked && host.reason.empty()) host.reason="execution_budget";
     } catch(const MP2InitializationRuntime::MemoryStop&) {
         // Precise stop at an unsupported hardware access; no fabricated register value.
     } catch(const std::exception& error) { host.reason=error.what(); }
+    // Always retain the last displayed frame when diagnosing a bounded run.
+    if(host.dump_frames) host.dumpFrame();
+    // Private diagnostic snapshot: GS local memory followed by drawing registers.
+    // Display registers remain in the run log; no guest memory is modified.
+    if(const char* dump=std::getenv("MP2R_DUMP_GS")) {
+        std::ofstream out(dump,std::ios::binary);
+        out.write(reinterpret_cast<const char*>(host.gs.vram.data()),std::streamsize(host.gs.vram.size()*sizeof(uint32_t)));
+        out.write(reinterpret_cast<const char*>(host.gs.regs.data()),std::streamsize(host.gs.regs.size()*sizeof(uint64_t)));
+        if(!out) log<<"GS snapshot write failed: "<<dump<<'\n';
+    }
     // Diagnostics: MP2R_DUMP_RAM=<file> writes guest RAM and registers at the stop (private data).
     if(const char* dump=std::getenv("MP2R_DUMP_RAM")) {
         std::ofstream out(dump,std::ios::binary);
@@ -122,6 +156,23 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     }
     log<<"stop reason="<<host.reason<<" pc=0x"<<std::hex<<cpu.pc<<" source=0x"<<host.blocked_source
        <<" address=0x"<<host.memory_address<<std::dec<<" steps="<<host.executions<<" dispatches="<<host.dispatches<<" semaphores="<<host.semaphores.size()<<'\n';
+    if(callbacks.profile) log<<"PROFILE wall_ns="<<std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-wall_start).count()
+        <<" iop_ns="<<host.iop_ns<<" ipu_ns="<<host.ipu_ns<<" gs_draw_ns="<<host.gs.draw_ns<<" present_ns="<<host.present_ns
+        <<" fast_clear_blocks="<<host.gs.fast_clear_blocks<<'\n';
+    if(callbacks.profile) {
+        log<<"GS PROFILE textured="<<host.gs.textured_primitives<<" types=";
+        for(auto n:host.gs.primitive_types) log<<n<<',';
+        log<<" formats=";
+        for(unsigned n=0;n<host.gs.texture_formats.size();++n)
+            if(host.gs.texture_formats[n]) log<<n<<':'<<host.gs.texture_formats[n]<<',';
+        log<<'\n';
+    }
+    if(callbacks.profile) {
+        std::vector<std::pair<uint32_t,std::pair<uint64_t,uint64_t>>> samples(sampled_functions.begin(),sampled_functions.end());
+        std::sort(samples.begin(),samples.end(),[](const auto& a,const auto& b){ return a.second.second>b.second.second; });
+        for(size_t n=0;n<std::min<size_t>(20,samples.size());++n) log<<"PROFILE sample_pc=0x"<<std::hex<<samples[n].first<<std::dec
+            <<" samples="<<samples[n].second.first<<" ns="<<samples[n].second.second<<'\n';
+    }
     if(host.dispatches>64) {
         log<<"last branches:";
         for(unsigned i=0;i<host.recent_branches.size();++i) {
@@ -134,14 +185,14 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     for(auto [k,n]:host.vif1.unpack_formats) log<<"UNPACK cmd=0x"<<std::hex<<(k&0xff)<<" usn="<<((k>>8)&1)<<" mode="<<((k>>9)&3)<<" cycle="<<(k>>11)<<std::dec<<" count="<<n<<'\n';
     for(auto [k,n]:host.iop.rpc_histogram) log<<"RPC sid=0x"<<std::hex<<(k>>32)<<" fno="<<std::dec<<(k&0xffffffff)<<" calls="<<n<<'\n';
     log<<"IPU commands="<<host.ipu.commands<<" macroblocks="<<host.ipu.macroblocks<<" GIF tags="<<host.gif.tags<<" GS image bytes="<<host.gs_image_bytes
-       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" VU1 programs="<<host.vu1.programs<<" XGKICKs="<<host.xgkicks<<" GS prims="<<host.gs.primitives<<" pixels="<<host.gs.pixels<<" frames="<<host.frames_dumped<<" interrupts="<<host.interrupts_delivered<<"\n";
+       <<" DMA qwords="<<host.dmac.qwords_transferred<<" VIF1 unpacked="<<host.vif1.unpacked_qwords<<" VU1 programs="<<host.vu1.programs<<" XGKICKs="<<host.xgkicks<<" GS prims="<<host.gs.primitives<<" pixels="<<host.gs.pixels<<" TEX2 writes="<<host.gs.tex2_writes<<" frames="<<host.frames_dumped<<" interrupts="<<host.interrupts_delivered<<"\n";
     {
         const auto& d4=host.dmac.channels[4]; const auto& d3=host.dmac.channels[3];
         log<<std::hex<<"IPU ctrl=0x"<<host.ipu.readCtrl()<<" bp=0x"<<host.ipu.readBp()<<" cmd=0x"<<host.ipu.readCmd()<<" queued="<<std::dec<<host.ipu.queuedQwords()
            <<" out="<<host.ipu.output.size()<<std::hex<<" D4 chcr=0x"<<d4.chcr<<" madr=0x"<<d4.madr<<" qwc=0x"<<d4.qwc<<" tadr=0x"<<d4.tadr
            <<" D3 chcr=0x"<<d3.chcr<<" madr=0x"<<d3.madr<<" qwc=0x"<<d3.qwc<<" dstat=0x"<<host.dmac_stat<<std::dec<<'\n';
         for(std::size_t i=1;i<=host.ipu_recent.size();++i)
-            if(auto& r=host.ipu_recent[(host.ipu_log+i)%host.ipu_recent.size()]; !r.empty() && i+8>host.ipu_recent.size()) log<<"recent "<<r<<'\n';
+            if(auto& r=host.ipu_recent[(host.ipu_log+i)%host.ipu_recent.size()]; r.valid && i+8>host.ipu_recent.size()) log<<"recent "<<host.ipuLine(r)<<'\n';
     }
     {
         auto reg=[&](uint32_t a){ auto it=host.gs_registers.find(a); return it==host.gs_registers.end()?uint64_t(0):it->second; };
@@ -155,6 +206,8 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
            <<std::hex<<" entry=0x"<<t->descriptor.entry<<" pc=0x"<<(id==host.threads.current()?cpu.pc:it!=host.thread_contexts.end()?it->second.cpu.pc:0)<<std::dec<<'\n';
     }
     log<<"threads="<<host.threads.size()<<" switches="<<host.context_switches<<" semaphore_waits="<<host.semaphore_waits<<'\n';
+    log<<"SIO2 transfers="<<host.sio2.transfers<<" pad0_polls="<<host.sio2.pad_polls[0]<<" pad1_polls="<<host.sio2.pad_polls[1]
+       <<" IOP DMA completions="<<host.iop_kernel.dma_completions_delivered<<'\n';
     if(host.context_switches==2 && host.semaphore_waits==1 && host.threads.current()==1) {
         const auto* helper=host.threads.get(2);
         const auto& saved=host.thread_contexts.at(2).cpu; const auto* context=&saved;
@@ -192,7 +245,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
             throw std::runtime_error("Original TLB service installation mismatch");
         log<<"original TLB service installation verified: Put/Set/Get/Probe/ExpandScratchPad and lookup\n";
     }
-    bool main_entry=host.reason=="missing_function" && cpu.pc==0x42f7e0;
+    bool main_entry=(host.reason=="missing_function" || host.reason=="breakpoint") && cpu.pc==0x42f7e0;
     if(main_entry) {
         auto* context=&cpu; auto argv=GPR_U32(context,5);
         auto argv0=MP2InitializationRuntime::readWord(ram.data(),argv);

@@ -47,6 +47,32 @@ int run() {
     check(done==4 && !ipu.busy,"CSC drains the whole transfer");
     check(ipu.output.size()==2*256*4,"two RGBA32 macroblocks");
     check(ipu.output[3]==0x80 && ipu.output[0]==ipu.output[1],"grey pixel, alpha 0x80");
+    // MPEG-2 intra: four luma and two chroma blocks, zero DC differences and EOB.
+    // The initial DC predictor 128 produces neutral Y/Cb/Cr=128, without an added bias.
+    auto neutral=[](bool idec) {
+        std::string bits=idec?"1":""; // I-picture macroblock_type for IDEC
+        bits+="1001010010100101001000100010";
+        while(bits.size()%8) bits+='0';
+        bits+="00000000000000000000000110110011"; // start code terminates the slice
+        while(bits.size()%128) bits+='0';
+        std::vector<uint8_t> bytes(bits.size()/8);
+        for(size_t n=0;n<bits.size();++n) if(bits[n]=='1') bytes[n/8]|=uint8_t(0x80>>(n%8));
+        return bytes;
+    };
+    ipu.reset(); auto encoded=neutral(false); ipu.inputBytes(encoded.data(),encoded.size());
+    ipu.command(0x2c000000); // BDEC intra, reset DC predictors
+    check(!ipu.busy && ipu.stop_reason.empty() && ipu.output.size()==768,"BDEC neutral intra block decodes");
+    for(size_t n=0;n<384;++n) {
+        uint16_t sample; std::memcpy(&sample,ipu.output.data()+n*2,2);
+        check(sample==128,"BDEC intra sample has no extra 128 bias");
+    }
+    ipu.reset(); encoded=neutral(true); ipu.inputBytes(encoded.data(),encoded.size());
+    ipu.command(0x10010000); // IDEC, qscale=1
+    check(!ipu.busy && ipu.stop_reason.empty() && ipu.output.size()==1024,"IDEC neutral intra block decodes");
+    for(size_t n=0;n<256;++n) {
+        auto* pixel=ipu.output.data()+n*4;
+        check(pixel[0]==130 && pixel[1]==130 && pixel[2]==130 && pixel[3]==128,"IDEC neutral intra block is grey");
+    }
     std::cout<<"IPU FIFO, FDEC, BP and CSC flow control verified\n";
     return 0;
 }

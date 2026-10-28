@@ -160,6 +160,8 @@ config.write_text((root/'config/mp2-full.toml').read_text()
     .replace('private/ghidra/mp2-functions-only.csv','private/ghidra/mp2-functions-merged.csv'))
 code=run(['build/ps2recomp/ps2xRecomp/Release/ps2_recomp.exe',str(config)],root/'private/logs/recompile-full.log','build')
 if code: raise SystemExit(f'Recompilation failed ({code})')
+from fix_vu0_comparisons import fix_tree
+fix_tree(staging)
 target=root/'private/generated/full'; target.mkdir(exist_ok=True)
 new={p.name for p in staging.iterdir()}
 changed=0

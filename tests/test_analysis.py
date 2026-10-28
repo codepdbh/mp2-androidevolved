@@ -11,6 +11,19 @@ def module(name):
     return result
 
 class AnalysisTests(unittest.TestCase):
+    def test_vu0_comparison_translation_is_reproducible(self):
+        fix=module('fix_vu0_comparisons')
+        source='''    // 0x4ae68c: 0x4be1102c  vsub.xyzw   $vf0, $vf2, $vf1
+    ctx->pc = 0x4ae68cu;
+    { __m128 res = PS2_VSUB(ctx->vu0_vf[2], ctx->vu0_vf[1]); __m128i mask = _mm_set_epi32(-1, -1, -1, -1); ctx->vu0_vf[0] = PS2_VBLEND(ctx->vu0_vf[0], res, _mm_castsi128_ps(mask)); }
+'''
+        fixed,count=fix.fix_text(source)
+        self.assertEqual(count,1)
+        self.assertIn('vu0CompareSub(ctx,ctx->vu0_vf[2],ctx->vu0_vf[1],15)',fixed)
+        self.assertNotIn('ctx->vu0_vf[0] =',fixed)
+        self.assertEqual(fix.fix_text(fixed),(fixed,0))
+        with self.assertRaises(ValueError): fix.fix_text(source.replace('0x4be1102c','0x4be1082c'))
+
     def test_original_elf_identity(self):
         info=module('analyze_iso').elf_info(ROOT/'private/disc/extracted/SLES_522.56')
         self.assertEqual(info['machine'],8)

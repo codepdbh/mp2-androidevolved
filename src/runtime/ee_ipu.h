@@ -262,7 +262,8 @@ private:
         for(int y=0;y<8;++y) for(int x=0;x<8;++x) { double s=0; for(int u=0;u<8;++u) s+=table[x][u]*in[y*8+u]; tmp[y*8+x]=s; }
         for(int x=0;x<8;++x) for(int y=0;y<8;++y) { double s=0; for(int v=0;v<8;++v) s+=table[y][v]*tmp[v*8+x]; out[y*8+x]=int16_t(std::clamp(int(std::lround(s)),-256,255)); }
     }
-    // Decodes the 6 blocks of a macroblock into Y[16][16], Cb[8][8], Cr[8][8] (signed samples).
+    // Intra IDCT already yields absolute samples (DC predictor starts at 128);
+    // non-intra IDCT yields signed residuals for motion compensation.
     bool macroblock(bool intra,int cbp,bool field_dct,int16_t y[256],int16_t cb[64],int16_t cr[64]) {
         int16_t b[64];
         for(int n=0;n<4;++n) {
@@ -371,8 +372,8 @@ private:
             if(overrun_) { rollback(snap); return; }
             if(!decoded) { stop_reason="ipu_bdec_bitstream "+describe(snap); return; }
             uint16_t raw[384];
-            for(int i=0;i<256;++i) raw[i]=uint16_t(intra?std::clamp(y[i]+128,0,255):y[i]);
-            for(int i=0;i<64;++i) { raw[256+i]=uint16_t(intra?std::clamp(cb[i]+128,0,255):cb[i]); raw[320+i]=uint16_t(intra?std::clamp(cr[i]+128,0,255):cr[i]); }
+            for(int i=0;i<256;++i) raw[i]=uint16_t(intra?std::clamp(int(y[i]),0,255):y[i]);
+            for(int i=0;i<64;++i) { raw[256+i]=uint16_t(intra?std::clamp(int(cb[i]),0,255):cb[i]); raw[320+i]=uint16_t(intra?std::clamp(int(cr[i]),0,255):cr[i]); }
             emit(raw,sizeof raw);
             startCodeCheck();
             if(overrun_) { rollback(snap); return; }
@@ -393,8 +394,8 @@ private:
                 if(overrun_) { rollback(snap); return; }
                 if(!decoded) { stop_reason="ipu_idec_bitstream"; return; }
                 uint8_t y8[256],cb8[64],cr8[64];
-                for(int i=0;i<256;++i) y8[i]=uint8_t(std::clamp(y[i]+128,0,255));
-                for(int i=0;i<64;++i) { cb8[i]=uint8_t(std::clamp(cb[i]+128,0,255)); cr8[i]=uint8_t(std::clamp(cr[i]+128,0,255)); }
+                for(int i=0;i<256;++i) y8[i]=uint8_t(std::clamp(int(y[i]),0,255));
+                for(int i=0;i<64;++i) { cb8[i]=uint8_t(std::clamp(int(cb[i]),0,255)); cr8[i]=uint8_t(std::clamp(int(cr[i]),0,255)); }
                 csc(y8,cb8,cr8,(c>>27)&1,(c>>26)&1,(c>>25)&1);
                 // next macroblock address increment, or the end of the slice at a start code
                 bool end=peek(23)==0; int inc=1; unsigned l2=0;

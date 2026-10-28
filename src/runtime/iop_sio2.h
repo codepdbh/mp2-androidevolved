@@ -1,6 +1,8 @@
 #pragma once
 #include "iop_kernel.h"
 #include <array>
+#include <cstdio>
+#include <functional>
 #include <vector>
 namespace mp2r {
 // DualShock 2 as seen on the SIO2 bus: the standard pad command protocol (0x40-0x4F),
@@ -58,6 +60,8 @@ public:
     std::array<DualShock2,2> pads;
     std::array<bool,4> connected{true,false,false,false};
     uint64_t transfers{};
+    std::array<uint64_t,2> pad_polls{};
+    std::function<void(unsigned,DualShock2&)> sample_input;
     void install(IopKernel& kernel) {
         auto add=[&](int index,IopKernel::Hle fn){ kernel.hle[{"sio2man",index}]=std::move(fn); };
         auto lock=[](IopKernel& k){ k.ret(1); };
@@ -95,9 +99,21 @@ private:
             std::vector<uint8_t> chunk(tx.begin()+std::min(cursor,tx.size()),tx.begin()+std::min(cursor+send,tx.size()));
             cursor+=send;
             std::vector<uint8_t> reply;
-            if(port<2 && connected[port] && !chunk.empty() && chunk[0]==0x01) reply=pads[port].transfer(chunk);
+            if(port<2 && connected[port] && !chunk.empty() && chunk[0]==0x01) {
+                if(chunk.size()>1 && chunk[1]==0x42) {
+                    ++pad_polls[port];
+                    if(sample_input) sample_input(port,pads[port]);
+                }
+                reply=pads[port].transfer(chunk);
+            }
             else { reply.assign(recv,0xff); missing=true; }
             reply.resize(recv,0xff);
+            if(k.log && (transfers<120 || (transfers%5000)==0)) {
+                *k.log<<"SIO2 #"<<transfers<<" port="<<port<<" tx:"; char h[4];
+                for(auto c:chunk) { std::snprintf(h,sizeof h," %02x",c); *k.log<<h; }
+                *k.log<<" rx:"; for(auto c:reply) { std::snprintf(h,sizeof h," %02x",c); *k.log<<h; }
+                *k.log<<'\n';
+            }
             rx.insert(rx.end(),reply.begin(),reply.end());
         }
         ++transfers;

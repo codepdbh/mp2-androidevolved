@@ -13,8 +13,8 @@ namespace mp2r {
 // otherwise the voice stops). KON restarts at SSA and clears ENDX; KOFF only starts the
 // envelope release, so addressing continues. Block transfers feed the
 // core's sound data input (ADMA) at 48 kHz stereo 16-bit, 192000 bytes/s: a loop transfer
-// raises the handler at each half of its buffer. Mixing and audio output are not
-// implemented yet; mixing-dependent queries stop explicitly.
+// raises the handler at each half of its buffer. An optional raw PCM stream tap
+// feeds the host output. Full voice/core mixing and effects are not implemented.
 class IopLibsd {
 public:
     std::vector<uint8_t> spu_ram=std::vector<uint8_t>(0x200000);
@@ -23,6 +23,8 @@ public:
     uint32_t spu2_handler{},spu2_arg{};
     std::array<uint32_t,2> trans_status{};
     uint64_t transfers{},bytes{};
+    std::function<void(unsigned,const int16_t*,uint32_t)> stream_pcm;
+    uint64_t streamed_frames{};
     struct Block { bool active{},loop{}; uint32_t base{},size{},half{}; uint64_t halves{}; std::chrono::steady_clock::time_point start{}; };
     std::array<Block,2> blocks{};
     static constexpr uint64_t adma_bytes_per_second=48000*4;
@@ -87,6 +89,19 @@ public:
             uint64_t ns=uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now-b.start).count());
             uint64_t due=ns*adma_bytes_per_second/(uint64_t(b.size/2)*1000000000ull);
             while(b.active && b.halves<due && k.stop_reason.empty()) {
+                if(stream_pcm && b.size%2048==0) {
+                    uint32_t half=b.size/2;
+                    const uint8_t* source=k.sif.ram(b.base+b.half*half,half);
+                    std::vector<int16_t> stereo(half/2);
+                    // SPU2 AutoDMA: groups of 256 left samples, then 256 right
+                    // samples (1024 bytes), repeated across the transfer half.
+                    for(uint32_t at=0;at<half;at+=1024) for(uint32_t sample=0;sample<256;++sample) {
+                        std::memcpy(&stereo[at/2+sample*2],source+at+sample*2,2);
+                        std::memcpy(&stereo[at/2+sample*2+1],source+at+512+sample*2,2);
+                    }
+                    streamed_frames+=half/4;
+                    stream_pcm(c,stereo.data(),half/4);
+                }
                 ++b.halves; b.half^=1; bytes+=b.size/2;
                 if(!b.loop && b.halves>=2) b.active=false;
                 if(b.loop || !b.active) { trans_status[c]=1; if(trans_handler[c]) k.callGuest(trans_handler[c],{c,trans_arg[c]}); }
@@ -97,7 +112,10 @@ public:
     void install(IopKernel& kernel) {
         auto add=[&](int index,IopKernel::Hle fn){ kernel.hle[{"libsd",index}]=std::move(fn); };
         kernel.ticks.push_back([this](IopKernel& k){ tick(k); });
-        add(4,[this](IopKernel& k){ params.clear(); switches.clear(); addresses.clear(); k.ret(0); });             // sceSdInit
+        add(4,[this](IopKernel& k){ // sceSdInit: halt old playback before the new driver configures it
+            params.clear(); switches.clear(); addresses.clear(); blocks={}; voices={}; endx={};
+            voice_clock=mp2r::EmuClock::now(); k.ret(0);
+        });
         add(5,[this](IopKernel& k){                                                                             // sceSdSetParam
             uint32_t entry=k.arg(0)&0xffff,value=k.arg(1)&0xffff; params[entry]=value;
             if((entry&0xff00)==0x0200) voices[entry&1][(entry>>1)&31].pitch=value;   // SD_VP_PITCH

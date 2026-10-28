@@ -30,7 +30,10 @@ private:
         if(!active_) {                                     // GIFtag
             nloop_=uint32_t(lo&0x7fff); eop_=(lo>>15)&1; flg_=uint32_t((lo>>58)&3); nreg_=uint32_t((lo>>60)&0xf); if(!nreg_) nreg_=16;
             regs_=hi; reg_index_=0; ++tags;
-            if((lo>>46)&1) write_register(0x00,(lo>>47)&0x7ff);        // PRE: PRIM field
+            if(nloop_) {
+                q_=0x3f800000;                             // GIF temporary Q resets to 1.0 at a nonempty tag
+                if(flg_==0 && ((lo>>46)&1)) write_register(0x00,(lo>>47)&0x7ff); // PRE applies only to PACKED
+            }
             active_=nloop_!=0;
             return;
         }
@@ -64,18 +67,17 @@ private:
             case 0x1: write_register(0x01,f(0,8,lo)|f(32,8,lo)<<8|f(0,8,hi)<<16|f(32,8,hi)<<24|(q_<<32)); break; // RGBAQ
             case 0x2: q_=f(0,32,hi); write_register(0x02,lo); break;                                  // ST
             case 0x3: write_register(0x03,f(0,14,lo)|f(32,14,lo)<<16); break;                         // UV
-            case 0x4: {                                                                               // XYZF2/3
+            case 0x4: case 0xc: {                                                                     // XYZF2/3
                 uint64_t v=f(0,16,lo)|f(32,16,lo)<<16|f(4,24,hi)<<32|f(36,8,hi)<<56;
-                write_register(f(47,1,hi)?0x0c:0x04,v); break;
+                write_register(reg==0xc || f(47,1,hi)?0x0c:0x04,v); break;
             }
-            case 0x5: {                                                                               // XYZ2/3
+            case 0x5: case 0xd: {                                                                     // XYZ2/3
                 uint64_t v=f(0,16,lo)|f(32,16,lo)<<16|f(0,32,hi)<<32;
-                write_register(f(47,1,hi)?0x0d:0x05,v); break;
+                write_register(reg==0xd || f(47,1,hi)?0x0d:0x05,v); break;
             }
             case 0x6: write_register(0x06,lo); break; case 0x7: write_register(0x07,lo); break;     // TEX0_1/2
             case 0x8: write_register(0x08,lo); break; case 0x9: write_register(0x09,lo); break;     // CLAMP_1/2
             case 0xa: write_register(0x0a,f(36,8,hi)<<56); break;                                     // FOG
-            case 0xc: write_register(0x0c,lo); break; case 0xd: write_register(0x0d,lo); break;
             case 0xe: write_register(uint8_t(hi&0xff),lo); break;                                     // A+D
             case 0xf: break;                                                                          // NOP
             default: stop_reason="gif_packed_register "+std::to_string(reg);

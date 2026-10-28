@@ -1,5 +1,24 @@
 # Bloqueos y siguientes comprobaciones
 
+Actualización S25: programa completo instalado; se resolvieron búsqueda de
+módulos LOADFILE y drenaje cuadrático del vídeo. Persisten menús invertidos,
+HUD contextual y falta renderer GPU. AAudio de streaming y blend de campos
+están en validación; SPU2 completo sigue pendiente.
+[Sesión y evidencia](SESSION_S25_2026-10-28.md).
+
+## Estado actual: revisión de 2026-10-28
+
+Se corrigió la saturación magenta del vídeo (sesgo extra tras IDCT intra).
+Captura real «PRESENTS» verificada; aún presenta campos duplicados.
+GIF reinicia Q por tag y respeta PRE solo en PACKED no vacío.
+
+El avance del usuario ya ejecuta programa completo, IOP, vídeo y rasterización
+GS. Se resolvió el callback de sceSifSetDmaIntr que bloqueaba DS2U; el mando
+vuelve a actualizarse.21 tests pasan. Persisten imágenes negras/invertidas y
+falta integración de presentación/entrada/audio en el frontend Android del
+programa completo. Sin gameplay validado.
+[Revisión y evidencia](REVIEW_2026-10-28.md).
+
 ## Estado actual: iteración 6, 2026-10-27
 
 InitSys completo. La ejecución se detiene en main() 0x0042F7E0, llamada desde

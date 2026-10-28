@@ -2,6 +2,8 @@
 // Native EE platform services shared by the selected-function probe and the
 // whole-program build. Generated translation units see it through PS2Runtime.
 #include "emu_clock.h"
+#include "deinterlace.h"
+#include "scene_preview.h"
 #include "mp2_guest_runtime.h"
 #include "bootstrap_runtime.h"
 #include "ee_semaphores.h"
@@ -146,7 +148,7 @@ public:
         if(timer2.advanceBusCycles(cycles)) intc.raise(11);
         if(timer3.advanceBusCycles(cycles)) intc.raise(12);
         auto blank=vblank.advance(uint64_t(ns));
-        if(blank&mp2r::EeVblank::Start) { if(dump_frames && ++vblanks%frame_every==0) dumpFrame(); intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
+        if(blank&mp2r::EeVblank::Start) { ++vblanks; if(dump_frames && vblanks%frame_every==0) dumpFrame(); if(present_frame) presentFrame(); intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
         if(blank&mp2r::EeVblank::End) { intc.raise(3); iop_kernel.signalVblank(false); }
     }
     // ---- Interrupt delivery (INT0 = INTC, INT1 = DMAC), modelled on the EE kernel dispatcher:
@@ -254,6 +256,32 @@ public:
     const char* dump_frames=std::getenv("MP2R_DUMP_FRAMES");
     unsigned frame_every=[]{ const char* v=std::getenv("MP2R_FRAME_EVERY"); return v?unsigned(std::max(1,std::atoi(v))):50u; }();
     uint64_t vblanks{},frames_dumped{};
+    bool profile{};
+    uint64_t iop_ns{},ipu_ns{},present_ns{};
+    std::function<void(const uint32_t*,uint32_t,uint32_t)> present_frame;
+    std::chrono::steady_clock::time_point last_present{};
+    mp2r::FieldBlend field_blend;
+    bool compensate_scene_preview{},scene_preview_active{};
+    void presentFrame() {
+        auto now=std::chrono::steady_clock::now();
+        if(now-last_present<std::chrono::milliseconds(33)) return;
+        last_present=now;
+        mp2r::RuntimeTimer timing(profile,present_ns);
+        auto reg=[this](uint32_t a){ auto it=gs_registers.find(a); return it==gs_registers.end()?uint64_t(0):it->second; };
+        std::vector<uint32_t> px; uint32_t w{},h{};
+        if(gs.frame(reg(0x12000000u),reg(0x12000070u),reg(0x12000080u),reg(0x12000090u),reg(0x120000a0u),px,w,h,uint32_t(reg(0x120000e0u)),reg(0x12000020u)))
+        {
+            const bool compensated=compensate_scene_preview && mp2r::compensateScenePreview(px,w,h,reg(0x12000020u),gs.regs[0x18]);
+            if(compensated!=scene_preview_active) {
+                scene_preview_active=compensated;
+                log<<"PREVIEW scene orientation compensation="<<compensated<<'\n';
+            }
+            // FIELD-mode scene buffers already contain the complete image;
+            // mixing them can retain old UI text. Blend only movie FRAME fields.
+            const auto& stable=field_blend.process(px,w,h,(reg(0x12000020u)&3)==3,vblank.oddField());
+            present_frame(stable.data(),w,h);
+        }
+    }
     void dumpFrame() {
         std::vector<uint32_t> px; uint32_t w=0,h=0;
         auto reg=[this](uint32_t a){ auto it=gs_registers.find(a); return it==gs_registers.end()?uint64_t(0):it->second; };
@@ -262,7 +290,7 @@ public:
             uint64_t fr=gs.regs[0x4c]; uint64_t fb=(fr&0x1ff)|(((fr>>16)&0x3f)<<9)|(((fr>>24)&0x1f)<<15);
             dispfb1=dispfb2=fb;
         }
-        if(!gs.frame(reg(0x12000000u),dispfb1,reg(0x12000080u),dispfb2,reg(0x120000a0u),px,w,h)) return;
+        if(!gs.frame(reg(0x12000000u),dispfb1,reg(0x12000080u),dispfb2,reg(0x120000a0u),px,w,h,uint32_t(reg(0x120000e0u)),reg(0x12000020u))) return;
         char name[64]; std::snprintf(name,sizeof name,"/frame%05llu.bmp",(unsigned long long)vblanks);
         std::ofstream out(std::string(dump_frames)+name,std::ios::binary);
         uint32_t row=(w*3+3)&~3u,size=54+row*h;
@@ -317,7 +345,18 @@ public:
     // IPU: registers 0x10002000 CMD, 0x10002010 CTRL, 0x10002020 BP, 0x10002030 TOP; FIFOs out 0x10007000 / in 0x10007010.
     mp2r::EeIpu ipu;
     unsigned ipu_log{},ipu_reads{},ipu_ctrl_log{};
-    std::array<std::string,48> ipu_recent;
+    struct IpuRecord {
+        uint32_t command{},pc{},ra{},ctrl{},data{},top{},qwc{};
+        uint64_t output{},input{};
+        bool irq{},busy{},valid{};
+    };
+    std::array<IpuRecord,48> ipu_recent{};
+    static std::string ipuLine(const IpuRecord& r) {
+        std::ostringstream line;
+        line<<"IPU cmd 0x"<<std::hex<<r.command<<" pc=0x"<<r.pc<<" ra=0x"<<r.ra<<" irq="<<r.irq<<" ctrl=0x"<<r.ctrl
+            <<" busy="<<r.busy<<" data=0x"<<r.data<<" top=0x"<<r.top<<std::dec<<" out="<<r.output<<" ch3qwc="<<r.qwc<<" in="<<r.input;
+        return line.str();
+    }
     // MP2R_TRACE_FROM_IPU=N logs the 3000 guest branches that follow the Nth IPU command.
     // MP2R_TRACE_AT=<hex pc> logs 4000 guest branches from the first dispatch to that pc.
     uint32_t trace_at=[]{ const char* v=std::getenv("MP2R_TRACE_AT"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
@@ -343,15 +382,15 @@ public:
     void ipuWrite(R5900Context* cpu,uint32_t a,uint64_t v) {
         auto p=a&0x1fffffffu;
         if(p==0x10002000u) {
-            ipu.command(uint32_t(v));
+            { mp2r::RuntimeTimer timing(profile,ipu_ns); ipu.command(uint32_t(v)); }
             if(trace_ipu_from && ipu_log+1==trace_ipu_from) trace_branches=3000;
-            std::ostringstream line;
-            line<<"IPU cmd 0x"<<std::hex<<uint32_t(v)<<" pc=0x"<<cpu->pc<<" ra=0x"<<GPR_U32(cpu,31)<<" irq="<<bool(interrupt)<<" ctrl=0x"<<ipu.readCtrl()<<" busy="<<ipu.busy<<" data=0x"<<ipu.cmd_data
-                <<" top=0x"<<ipu.top<<std::dec<<" out="<<ipu.output.size()<<" ch3qwc="<<dmac.channels[3].qwc<<" in="<<ipu.input_total<<" next="<<ipu.peekHex(8);
-            if(++ipu_log<=400) log<<line.str()<<'\n';
-            ipu_recent[ipu_log%ipu_recent.size()]=line.str();
+            ++ipu_log;
+            auto& record=ipu_recent[ipu_log%ipu_recent.size()];
+            record={uint32_t(v),cpu->pc,GPR_U32(cpu,31),ipu.readCtrl(),ipu.cmd_data,ipu.top,dmac.channels[3].qwc,
+                    ipu.output.size(),ipu.input_total,bool(interrupt),ipu.busy,true};
+            if(ipu_log<=400) log<<ipuLine(record)<<" next="<<ipu.peekHex(8)<<'\n';
             if(!ipu.stop_reason.empty())
-                for(std::size_t i=1;i<=ipu_recent.size();++i) if(auto& r=ipu_recent[(ipu_log+i)%ipu_recent.size()]; !r.empty()) log<<"recent "<<r<<'\n';
+                for(std::size_t i=1;i<=ipu_recent.size();++i) if(auto& r=ipu_recent[(ipu_log+i)%ipu_recent.size()]; r.valid) log<<"recent "<<ipuLine(r)<<'\n';
         }
         else if(p==0x10002010u) { if(++ipu_ctrl_log<=40) log<<"IPU ctrl write 0x"<<std::hex<<uint32_t(v)<<" pc=0x"<<cpu->pc<<" ra=0x"<<GPR_U32(cpu,31)<<std::dec<<'\n'; ipu.writeCtrl(uint32_t(v)); }
         afterIpu(cpu);
@@ -487,7 +526,11 @@ public:
     void registerIopServices() {
         auto loader=[this](mp2r::IopSif&,const std::string& path,const std::string& name,const std::string& args){ return loadIopModule(path,name,args); };
         auto files=[this](const std::string& path){ return readDiscFile(path); };
-        mp2r::registerResidentIopServices(iop,loader,files);
+        mp2r::registerResidentIopServices(iop,loader,files,[this](int id,const std::string& args){
+            auto result=iop_kernel.stopModule(id,args);
+            if(!iop_kernel.stop_reason.empty()) iop.stop_reason=iop_kernel.stop_reason;
+            return result;
+        });
         mp2r::registerCdvdServices(iop,disc?&*disc:nullptr,[this](uint32_t cmd,uint32_t packet,uint32_t size) -> int32_t {
             std::vector<uint8_t> in(size),out(4);
             std::memcpy(in.data(),iop.ram(packet,size),size);
@@ -542,15 +585,21 @@ public:
     // Hardware drivers MP2R provides as native libraries instead of running their IRX.
     static bool nativeIopModule(const std::string& name) { return name=="LIBSD.IRX" || name=="SIO2MAN.IRX"; }
     int loadIopModule(const std::string& path,const std::string& name,const std::string& args) {
-        if(nativeIopModule(name)) return int(iop.modules.size()+1);
+        int id=int(iop.modules.size()+1);
+        if(nativeIopModule(name)) {
+            if(auto irx=readDiscFile(path)) if(auto internal=mp2r::irxInternalName(*irx)) iop.module_ids[*internal]=id;
+            return id;
+        }
         if(disc_root.empty()) { iop.stop_reason="iop_module_without_disc "+name; return -1; }
         auto irx=readDiscFile(path);
         if(!irx) { log<<"IOP module not found on disc: "<<path<<'\n'; return -203; }      // KE_NOFILE
-        if(!iop_kernel.loadModule(*irx,name,args)) { iop.stop_reason=iop_kernel.stop_reason.empty()?"iop_module_no_resident "+name:iop_kernel.stop_reason; return -1; }
-        return int(iop.modules.size()+1);
+        if(!iop_kernel.loadModule(*irx,name,args,id)) { iop.stop_reason=iop_kernel.stop_reason.empty()?"iop_module_no_resident "+name:iop_kernel.stop_reason; return -1; }
+        if(auto internal=mp2r::irxInternalName(*irx)) iop.module_ids[*internal]=id;
+        return id;
     }
     // Lets IOP threads run; replies they queue for the EE are pumped through SIF0.
     void runIop(uint64_t budget) {
+        mp2r::RuntimeTimer timing(profile,iop_ns);
         iop_kernel.run(budget);
         if(!iop_kernel.stop_reason.empty() && iop.stop_reason.empty()) iop.stop_reason=iop_kernel.stop_reason;
         iop.pumpPending(dmac_stat);

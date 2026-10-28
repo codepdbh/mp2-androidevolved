@@ -48,6 +48,7 @@ public:
     std::ostream* log{};
     std::string stop_reason;      // set when the guest needs an IOP service MP2R does not provide
     std::vector<std::string> modules;
+    std::map<std::string,int> module_ids; // resident IRX internal name -> newest successful load id
     std::string reboot_image;
     std::function<void(IopSif&)> on_reboot; // re-registers resident servers after an IOP reset
     unsigned rpc_calls{};
@@ -175,6 +176,7 @@ public:
     }
 private:
     void boot() {
+        module_ids.clear();
         servers_.clear(); sif0_.clear(); sif0_busy_=false; heap_=0x00020000; blocks_.clear(); pending_calls_.clear();
         smcom_=command_buffer; smflag_|=SIFINIT|CMDINIT|BOOTEND;
         if(on_reboot) on_reboot(*this);

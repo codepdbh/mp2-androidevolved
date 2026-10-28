@@ -1,4 +1,5 @@
 #pragma once
+#include "runtime_timing.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -12,13 +13,21 @@ namespace mp2r {
 // host->local and local->local transfers, and the drawing pipeline (points, lines, triangles,
 // strips, fans, sprites; Gouraud, Z, texture mapping with CLUT/TEXA/TFX, fog, alpha test,
 // destination alpha test, alpha blending, FBMSK/ZMSK, scissor, FBA). Texture sampling is
-// nearest-neighbour and dithering is not applied. The display circuit reads PMODE/DISPFB/DISPLAY.
+// nearest or bilinear when both TEX1 min/mag select linear without mipmaps;
+// dithering is not applied. The display circuit reads PMODE/DISPFB/DISPLAY.
 class GsRenderer {
 public:
     std::vector<uint32_t> vram=std::vector<uint32_t>(1024*1024);   // 4 MB as 32-bit words
     std::array<uint64_t,0x64> regs{};
     std::string stop_reason;
     uint64_t primitives{},pixels{};
+    uint64_t tex2_writes{},textured_primitives{};
+    std::array<uint64_t,8> primitive_types{};
+    std::array<uint64_t,64> texture_formats{};
+    bool fast_clears=true;
+    uint64_t fast_clear_blocks{};
+    bool profile{};
+    uint64_t draw_ns{};
     std::ostream* trace{}; uint64_t trace_from{}; unsigned trace_left{40};
 
     // ---------------- swizzles (word / halfword / byte / nibble addresses)
@@ -128,6 +137,15 @@ public:
             case 0x53: regs[reg]=v; startTransfer(); return;                               // TRXDIR
             case 0x54: hwreg(v); return;                                                   // HWREG
             case 0x06: case 0x07: regs[reg]=v; if(((v>>61)&7)!=0) clut_dirty_=true; return; // TEX0 (CLD)
+            case 0x16: case 0x17: {                                                       // TEX2 updates selected TEX0 fields
+                constexpr uint64_t mask=(uint64_t(0x3f)<<20)|(~uint64_t(0)<<37);
+                const unsigned tex0=0x06+(reg-0x16);
+                ++tex2_writes;
+                regs[reg]=v;
+                regs[tex0]=(regs[tex0]&~mask)|(v&mask);
+                if((v>>61)&7) clut_dirty_=true;
+                return;
+            }
         }
         regs[reg]=v;
     }
@@ -135,15 +153,44 @@ public:
 
     // ---------------- display: reads the enabled read circuit's frame buffer as RGBA8
     // pmode/dispfb/display: privileged registers (PMODE, DISPFB1/2, DISPLAY1/2).
-    bool frame(uint64_t pmode,uint64_t dispfb1,uint64_t display1,uint64_t dispfb2,uint64_t display2,std::vector<uint32_t>& out,uint32_t& w,uint32_t& h) {
+    bool frame(uint64_t pmode,uint64_t dispfb1,uint64_t display1,uint64_t dispfb2,uint64_t display2,std::vector<uint32_t>& out,uint32_t& w,uint32_t& h,uint32_t background=0,uint64_t smode2=0) {
         bool en2=(pmode>>1)&1,en1=pmode&1;
         if(!en1 && !en2) return false;
-        uint64_t fb=en2?dispfb2:dispfb1,disp=en2?display2:display1;
-        uint32_t fbp=uint32_t(fb&0x1ff),fbw=uint32_t((fb>>9)&0x3f),psm=uint32_t((fb>>15)&0x1f),dbx=uint32_t((fb>>32)&0x7ff),dby=uint32_t((fb>>43)&0x7ff);
-        uint32_t magh=uint32_t((disp>>23)&15)+1,dw=uint32_t((disp>>32)&0xfff)+1,dh=uint32_t((disp>>44)&0x7ff)+1;
-        w=dw/magh; h=dh; if(!w || !h || w>2048 || h>2048) return false;
+        struct Circuit { uint32_t bp,bw,psm,x,y,w,h; };
+        auto circuit=[](uint64_t fb,uint64_t display){
+            return Circuit{uint32_t(fb&0x1ff)*32,uint32_t((fb>>9)&0x3f),uint32_t((fb>>15)&0x1f),
+                uint32_t((fb>>32)&0x7ff),uint32_t((fb>>43)&0x7ff),
+                (uint32_t((display>>32)&0xfff)+1)/(uint32_t((display>>23)&15)+1),
+                (uint32_t((display>>44)&0x7ff)+1)/(uint32_t((display>>27)&3)+1)};
+        };
+        auto first=circuit(dispfb1,display1),second=circuit(dispfb2,display2);
+        // Interlaced FRAME mode reads one half-height image per field. Reading
+        // DH+1 rows here runs into the following buffer and duplicates the movie.
+        if((smode2&3)==3) { first.h=(first.h+1)/2; second.h=(second.h+1)/2; }
+        auto valid=[](const Circuit& c){ return c.w && c.h && c.w<=2048 && c.h<=2048; };
+        if((en1 && !valid(first)) || (en2 && !valid(second))) return false;
+        w=std::max(en1?first.w:0u,en2?second.w:0u); h=std::max(en1?first.h:0u,en2?second.h:0u);
         out.assign(size_t(w)*h,0);
-        for(uint32_t y=0;y<h;++y) for(uint32_t x=0;x<w;++x) out[size_t(y)*w+x]=toRgba(psm,readPixel(psm,fbp*32,fbw,dbx+x,dby+y))|0xff000000u;
+        auto sample=[&](const Circuit& c,uint32_t x,uint32_t y){ return toRgba(c.psm,readPixel(c.psm,c.bp,c.bw,c.x+x,c.y+y)); };
+        bool fixed=(pmode&0x20)!=0;
+        uint32_t fixed_alpha=uint32_t((pmode>>8)&0xff);
+        for(uint32_t y=0;y<h;++y) for(uint32_t x=0;x<w;++x) {
+            if(en1 && fixed && fixed_alpha==128 && x<first.w && y<first.h) {
+                out[size_t(y)*w+x]=sample(first,x,y)|0xff000000u;
+                continue;
+            }
+            uint32_t below=(en2 && !(pmode&0x80) && x<second.w && y<second.h)?sample(second,x,y):background;
+            if(en1 && !(fixed && !fixed_alpha) && x<first.w && y<first.h) {
+                uint32_t above=sample(first,x,y),alpha=(pmode&0x20)?uint32_t((pmode>>8)&0xff):above>>24;
+                uint32_t mixed=0;
+                for(unsigned shift:{0u,8u,16u}) {
+                    int a=int((above>>shift)&0xff),b=int((below>>shift)&0xff);
+                    mixed|=uint32_t(std::clamp(b+((a-b)*int(alpha)>>7),0,255))<<shift;
+                }
+                below=mixed;
+            }
+            out[size_t(y)*w+x]=below|0xff000000u;
+        }
         return true;
     }
     static uint32_t toRgba(uint32_t psm,uint32_t v) {       // little-endian R,G,B,A bytes
@@ -176,9 +223,26 @@ private:
         if(!known(dpsm)) { stop_reason="gs_transfer_psm "+std::to_string(dpsm); return; }
         if(!rrw || !rrh) { tx_active_=0; return; }
         uint8_t b[8]; std::memcpy(b,&v,8);
-        tx_pending_.insert(tx_pending_.end(),b,b+8);
         uint32_t bpp=bitsPerPixel(dpsm);
         auto next=[&]{ if(++tx_x_>=rrw) { tx_x_=0; if(++tx_y_>=rrh) tx_active_=0; } };
+        // All formats except 24-bit fit an integral number of pixels in an
+        // HWREG word. Consume them directly instead of allocating, inserting
+        // and erasing a vector for every eight bytes of a video or texture.
+        if(bpp!=24 && tx_pending_.empty()) {
+            if(bpp==4) {
+                for(unsigned at=0;at<8 && tx_active_;++at) for(unsigned n=0;n<2 && tx_active_;++n) {
+                    writePixel(dpsm,dbp,dbw,dsax+tx_x_,dsay+tx_y_,(b[at]>>(n*4))&15); next();
+                }
+            } else {
+                const unsigned bytes=bpp/8;
+                for(unsigned at=0;at+bytes<=8 && tx_active_;at+=bytes) {
+                    uint32_t p=0; std::memcpy(&p,b+at,bytes);
+                    writePixel(dpsm,dbp,dbw,dsax+tx_x_,dsay+tx_y_,p); next();
+                }
+            }
+            return;
+        }
+        tx_pending_.insert(tx_pending_.end(),b,b+8);
         size_t at=0;
         if(bpp==4) {
             for(;at<tx_pending_.size() && tx_active_;++at) for(int n=0;n<2 && tx_active_;++n) { writePixel(dpsm,dbp,dbw,dsax+tx_x_,dsay+tx_y_,(tx_pending_[at]>>(n*4))&15); next(); }
@@ -236,7 +300,7 @@ private:
     struct Ctx { uint64_t frame,zbuf,test,alpha,tex0,tex1,clamp,scissor,fba; };
     Ctx context(uint64_t p) const {
         int c=int((p>>9)&1);
-        return {regs[0x4c+c],regs[0x4e+c],regs[0x47+c],regs[0x42+c],regs[0x06+c],regs[0x14+c],regs[0x08+c],regs[0x40+c],regs[0x4a+c]};
+        return {regs[0x4c + c],regs[0x4e + c],regs[0x47 + c],regs[0x42 + c],regs[0x06 + c],regs[0x14 + c],regs[0x08 + c],regs[0x40 + c],regs[0x4a + c]};
     }
     uint32_t clutEntry(const Ctx& c,uint32_t index) {
         uint64_t t=c.tex0;
@@ -287,6 +351,24 @@ private:
             }
         }
     }
+    uint32_t sampleTexture(const Ctx& c,float u,float v) {
+        if(!std::isfinite(u) || !std::isfinite(v)) return 0;
+        // MMAG=linear and MMIN=linear (no mipmaps): no LOD decision is
+        // necessary. The GS interpolates around texel centres with 4-bit UV.
+        if((c.tex1&0x1e0)!=0x60) return texel(c,int32_t(std::floor(u)),int32_t(std::floor(v)));
+        double su=double(u)-0.5,sv=double(v)-0.5;
+        int32_t x=int32_t(std::floor(su)),y=int32_t(std::floor(sv));
+        unsigned fx=std::min(15u,unsigned((su-x)*16)),fy=std::min(15u,unsigned((sv-y)*16));
+        uint32_t colors[4]={texel(c,x,y),texel(c,x+1,y),texel(c,x,y+1),texel(c,x+1,y+1)};
+        unsigned weights[4]={(16-fx)*(16-fy),fx*(16-fy),(16-fx)*fy,fx*fy};
+        uint32_t color=0;
+        for(unsigned shift:{0u,8u,16u,24u}) {
+            unsigned sum=0;
+            for(unsigned n=0;n<4;++n) sum+=((colors[n]>>shift)&255)*weights[n];
+            color|=(sum>>8)<<shift;
+        }
+        return color;
+    }
     void plot(const Ctx& c,uint64_t p,int32_t x,int32_t y,uint32_t z,int r,int g,int b,int a,uint8_t fog,bool tex,float s,float t,float q,float u,float v) {
         uint64_t sc=c.scissor;
         if(x<int32_t(sc&0x7ff) || x>int32_t((sc>>16)&0x7ff) || y<int32_t((sc>>32)&0x7ff) || y>int32_t((sc>>48)&0x7ff)) return;
@@ -296,13 +378,13 @@ private:
         uint32_t zbp=uint32_t(zb&0x1ff)*32,zpsm=uint32_t((zb>>24)&0xf)|0x30; bool zmsk=(zb>>32)&1;
         if(tex) {
             uint64_t t0=c.tex0;
-            int32_t tu,tv;
-            if((p>>8)&1) { tu=int32_t(std::floor(u/16.f)); tv=int32_t(std::floor(v/16.f)); }
+            float tu,tv;
+            if((p>>8)&1) { tu=u/16.f; tv=v/16.f; }
             else {
                 float iq=q!=0?1.f/q:0.f;
-                tu=int32_t(std::floor(s*iq*float(1<<((t0>>26)&15)))); tv=int32_t(std::floor(t*iq*float(1<<((t0>>30)&15))));
+                tu=s*iq*float(1<<((t0>>26)&15)); tv=t*iq*float(1<<((t0>>30)&15));
             }
-            uint32_t tc=texel(c,tu,tv); if(!stop_reason.empty()) return;
+            uint32_t tc=sampleTexture(c,tu,tv); if(!stop_reason.empty()) return;
             int tr=int(tc&0xff),tg=int((tc>>8)&0xff),tb=int((tc>>16)&0xff),ta=int(tc>>24);
             bool tcc=(t0>>34)&1; uint32_t tfx=uint32_t((t0>>35)&3);
             switch(tfx) {
@@ -335,12 +417,16 @@ private:
                 z=zc;
             }
         }
-        uint32_t dst=readPixel(fpsm,fbp,fbw,uint32_t(x),uint32_t(y)),drgba=toRgba(fpsm,dst);
+        const bool blend=((p>>6)&1) && (!(regs[0x49]&1) || (a&0x80));
+        // Only DATE and blending inspect the old colour. Masked writes retain
+        // the old bits in writePixel, so opaque draws need no separate read.
+        uint32_t dst=((te>>14)&1)||blend ? readPixel(fpsm,fbp,fbw,uint32_t(x),uint32_t(y)) : 0;
         if((te>>14)&1) {                                                        // destination alpha test
             bool bit=(fpsm==CT16 || fpsm==CT16S)?(dst&0x8000)!=0:(dst&0x80000000u)!=0;
             if(bit!=bool((te>>15)&1)) return;
         }
-        if(((p>>6)&1) && (!(regs[0x49]&1) || (a&0x80))) {                       // alpha blending (PABE)
+        if(blend) {                                                              // alpha blending (PABE)
+            uint32_t drgba=toRgba(fpsm,dst);
             uint64_t al=c.alpha;
             int cs[3]={r,g,b},cd[3]={int(drgba&0xff),int((drgba>>8)&0xff),int((drgba>>16)&0xff)};
             int ad=int(drgba>>24),fix=int((al>>32)&0xff);
@@ -369,6 +455,7 @@ private:
         if(write_z && ((te>>16)&1)) writePixel(zpsm,zbp,fbw,uint32_t(x),uint32_t(y),z);
     }
     void draw(uint32_t type,uint64_t p) {
+        RuntimeTimer timing(profile,draw_ns);
         ++primitives;
         Ctx c=context(p);
         if(trace && primitives>=trace_from && trace_left) {
@@ -381,6 +468,10 @@ private:
         uint32_t fpsm=uint32_t((c.frame>>24)&0x3f);
         if(fpsm!=CT32 && fpsm!=CT24 && fpsm!=CT16 && fpsm!=CT16S && fpsm!=Z32 && fpsm!=Z24 && fpsm!=Z16 && fpsm!=Z16S) { stop_reason="gs_frame_psm "+std::to_string(fpsm); return; }
         bool tex=(p>>4)&1,gouraud=(p>>3)&1;
+        if(profile) {
+            ++primitive_types[type];
+            if(tex) { ++textured_primitives; ++texture_formats[(c.tex0>>20)&63]; }
+        }
         switch(type) {
             case 0: { const auto& v=vq_[0]; plot(c,p,(v.x+8)>>4,(v.y+8)>>4,v.z,v.r,v.g,v.b,v.a,v.f,tex,v.s,v.t,v.q,float(v.u),float(v.v)); return; }
             case 1: case 2: line(c,p,vq_[0],vq_[1],gouraud,tex); return;
@@ -430,6 +521,23 @@ private:
         uint64_t sc=c.scissor;
         int32_t px0=std::max<int32_t>(int32_t(sc&0x7ff),(x0+15)>>4),px1=std::min<int32_t>(int32_t((sc>>16)&0x7ff),(x1-1)>>4);
         int32_t py0=std::max<int32_t>(int32_t((sc>>32)&0x7ff),(y0+15)>>4),py1=std::min<int32_t>(int32_t((sc>>48)&0x7ff),(y1-1)>>4);
+        // Uniform CT32 clears have no texture/fog/blending or alpha rejection,
+        // and never touch Z. Each aligned 8x8 GS block is 64 contiguous words.
+        if(fast_clears && !tex && !(p&0x60) && !(c.test&0x4001) && ((c.zbuf>>32)&1) &&
+           (!(c.test&0x10000) || ((c.test>>17)&3)==1) && ((c.frame>>24)&63)==CT32 &&
+           px0<=px1 && py0<=py1 && ((px0|py0|(px1+1)|(py1+1))&7)==0) {
+            uint32_t alpha=b.a|((c.fba&1)?0x80:0);
+            uint32_t value=uint32_t(b.r)|(uint32_t(b.g)<<8)|(uint32_t(b.b)<<16)|(alpha<<24);
+            uint32_t mask=uint32_t(c.frame>>32),bp=uint32_t(c.frame&0x1ff)*32,bw=uint32_t((c.frame>>16)&63);
+            for(int32_t y=py0;y<=py1;y+=8) for(int32_t x=px0;x<=px1;x+=8) {
+                auto* block=vram.data()+addr32(bp,bw,uint32_t(x),uint32_t(y));
+                if(!mask) std::fill(block,block+64,value);
+                else for(unsigned n=0;n<64;++n) block[n]=(block[n]&mask)|(value&~mask);
+                ++fast_clear_blocks;
+            }
+            pixels+=uint64_t(px1-px0+1)*uint64_t(py1-py0+1);
+            return;
+        }
         double w=std::max(1,x1-x0),h=std::max(1,y1-y0);
         for(int32_t y=py0;y<=py1;++y) for(int32_t x=px0;x<=px1;++x) {
             double fx=(double(x)*16-x0)/w,fy=(double(y)*16-y0)/h;

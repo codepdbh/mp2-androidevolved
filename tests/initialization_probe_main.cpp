@@ -16,6 +16,11 @@ int main(int argc,char** argv) {
         }
         auto budget=mp2r::runInitialization(elf.data(),elf.size(),std::cout,argv[2],0x60000,32);
         if(budget.reason!="checkpoint_budget" || budget.semaphores!=0) return 1;
+        mp2r::RuntimeCallbacks callbacks;
+        unsigned polls=0;
+        callbacks.should_stop=[&]{ ++polls; return true; };
+        auto stopped=mp2r::runInitialization(elf.data(),elf.size(),std::cout,argv[2],0x60000,2000000,200000,{},callbacks);
+        if(stopped.reason!="requested_stop" || stopped.functions!=0 || polls!=1) return 1;
         std::cout<<"PASS: original InitSys completed (OSD config, TLB services) and crt0 reached main() with disc boot arguments. No gameplay.\n";
         return 0;
     } catch(const std::exception& error) { std::cerr<<error.what()<<'\n'; return 1; }

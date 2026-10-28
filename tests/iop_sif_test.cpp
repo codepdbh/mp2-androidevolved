@@ -18,7 +18,10 @@ struct Ee {
     }
 };
 int main() {
-    IopSif iop; registerResidentIopServices(iop); iop.on_reboot=[](IopSif& s){ registerResidentIopServices(s); };
+    bool stopped=false;
+    IopSif iop; registerResidentIopServices(iop,{}, {},[&](int id,const std::string& args){
+        check(id==12 && args==std::string("x\0",2),"LOADFILE stop request layout"); stopped=true; return std::pair<int,int>{0,1};
+    }); iop.on_reboot=[](IopSif& s){ registerResidentIopServices(s); };
     Ee ee;
     check((iop.getReg(4)&(IopSif::SIFINIT|IopSif::CMDINIT|IopSif::BOOTEND))==0x70000 && iop.getReg(2)==IopSif::command_buffer,"boot flags");
     // sceSifInitCmd: INIT_CMD opt=0 gives the EE receive buffer (uncached alias).
@@ -41,6 +44,20 @@ int main() {
     ee.dmac_stat=0; iop.setDChain(ee.ram.data(),ee.dmac_stat);
     ee.send(iop,0x3200,64,0x5000,server_buffer,512);
     check(ee.w(pktbuf+32)==0x8000000a && ee.w(0x6000)==2 && ee.w(0x6004)==0 && iop.modules.at(0)=="RWA.IRX","module load");
+    iop.module_ids["rwa"]=2;
+    auto search=[&](const char* name){
+        ee.put(0x5000,{0,0}); std::memset(&ee.ram[0x5008],0,252); std::memcpy(&ee.ram[0x5008],name,std::strlen(name)+1);
+        ee.put(0x3200,{64,0,0x8000000a,0,8,0x3200,10,0x4000,9,512,0x6000,4,1,sd});
+        ee.dmac_stat=0; iop.setDChain(ee.ram.data(),ee.dmac_stat); ee.send(iop,0x3200,64,0x5000,server_buffer,512);
+        return int32_t(ee.w(0x6000));
+    };
+    check(search("rwa")==2,"LOADFILE finds resident internal module name");
+    check(search("RWA")==-202,"module search is case sensitive and returns KE_UNKNOWN_MODULE");
+    iop.module_ids["rwa"]=9; check(search("rwa")==9,"module search returns newest resident id");
+    ee.put(0x5000,{12,2}); std::memcpy(&ee.ram[0x5000+260],"x",2);
+    ee.put(0x3200,{64,0,0x8000000a,0,8,0x3200,10,0x4000,7,512,0x6000,8,1,sd});
+    ee.dmac_stat=0; iop.setDChain(ee.ram.data(),ee.dmac_stat); ee.send(iop,0x3200,64,0x5000,server_buffer,512);
+    check(stopped && ee.w(0x6000)==0 && ee.w(0x6004)==1,"LOADFILE stop returns API status and module result");
     // Unknown server: explicit stop reason, no reply.
     ee.dmac_stat=0; iop.setDChain(ee.ram.data(),ee.dmac_stat);
     ee.put(0x3300,{64,0,0x80000009,0,11,0x3300,12,0x4100,0x12345678}); ee.send(iop,0x3300,64);
@@ -51,5 +68,6 @@ int main() {
     iop.setReg(4,IopSif::BOOTEND); ee.send(iop,0x3400,112); iop.setReg(4,IopSif::SIFINIT|IopSif::CMDINIT);
     check(iop.getReg(4)&IopSif::BOOTEND,"reboot completes on SMFLAG poll");
     check(iop.reboot_image=="rom0:UDNL cdrom0:\\IOPRP280" && iop.hasServer(0x80000006),"resident services after reboot");
+    check(iop.module_ids.empty(),"IOP reboot discards old resident module names");
     std::cout<<"PASS: SIF init/sreg/bind/call/SIF0 queueing/missing server/IOP reset protocol\n";
 }

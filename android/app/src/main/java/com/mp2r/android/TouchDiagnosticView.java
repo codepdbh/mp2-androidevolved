@@ -21,6 +21,8 @@ final class TouchDiagnosticView extends View {
     private final SharedPreferences prefs;
     private final float density;
     boolean editing;
+    boolean gameMode;
+    private boolean visibleAction(int a) { return !gameMode || a==0 || a==2 || a==4 || a==5 || a==6 || a==7 || a==10; }
     private float cameraOriginX,cameraOriginY;
     float[] state=new float[60];
     TouchDiagnosticView(Context c) {
@@ -55,11 +57,11 @@ final class TouchDiagnosticView extends View {
     @Override protected void onDetachedFromWindow() { cancelAll(); super.onDetachedFromWindow(); }
     @Override protected void onSizeChanged(int w,int h,int oldw,int oldh) { cancelAll(); }
     @Override protected void onDraw(Canvas canvas) {
-        canvas.drawColor(0xff171a1d);
+        if(!gameMode) canvas.drawColor(0xff171a1d);
         paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(13*density); paint.setColor(0xff858888);
-        canvas.drawText(editing?"ARRASTRA LOS CONTROLES · posiciones locales":"ENTRADA SEMÁNTICA · los botones aún no controlan el juego",getWidth()*.5f,18*density,paint);
+        if(!gameMode || editing) canvas.drawText(editing?"ARRASTRA LOS CONTROLES · posiciones locales":"ENTRADA SEMÁNTICA · los botones aún no controlan el juego",getWidth()*.5f,18*density,paint);
         for(int a=0;a<12;a++) {
-            if(a==1) continue;
+            if(a==1 || !visibleAction(a)) continue;
             float x=controlX(a),y=controlY(a),r=radius(a);
             paint.setStyle(Paint.Style.FILL); paint.setColor(state[a*5+2]>0?0x998a6b3a:0x44252a2e);
             canvas.drawCircle(x,y,r,paint);
@@ -82,11 +84,13 @@ final class TouchDiagnosticView extends View {
             }
         }
         paint.setColor(0xffc7c0b2); paint.setTextSize(11*density);
-        canvas.drawText("CÁMARA · desliza en la zona libre derecha",getWidth()*.56f,getHeight()*.40f,paint);
-        canvas.drawText(String.format(java.util.Locale.ROOT,"MOVE %.2f %.2f  ·  LOOK %.2f %.2f",state[0],state[1],state[5],state[6]),getWidth()*.5f,getHeight()*.53f,paint);
+        if(!gameMode) {
+            canvas.drawText("CÁMARA · desliza en la zona libre derecha",getWidth()*.56f,getHeight()*.40f,paint);
+            canvas.drawText(String.format(java.util.Locale.ROOT,"MOVE %.2f %.2f  ·  LOOK %.2f %.2f",state[0],state[1],state[5],state[6]),getWidth()*.5f,getHeight()*.53f,paint);
+        }
     }
     private int hit(float x,float y) {
-        for(int a=11;a>=0;a--) if(a!=1 && Math.hypot(x-controlX(a),y-controlY(a))<=radius(a)*1.1) return a;
+        for(int a=11;a>=0;a--) if(a!=1 && visibleAction(a) && Math.hypot(x-controlX(a),y-controlY(a))<=radius(a)*1.1) return a;
         return -1;
     }
     @Override public boolean onTouchEvent(MotionEvent event) {
