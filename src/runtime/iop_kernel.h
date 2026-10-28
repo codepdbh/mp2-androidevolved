@@ -29,7 +29,7 @@ public:
         uint32_t event_bits{},event_mode{},event_result{}; // WaitEventFlag arguments
     };
     struct Sema { int count{},max{}; uint32_t attr{},option{}; };
-    struct EventFlag { uint32_t bits{},attr{},option{}; };
+    struct EventFlag { uint32_t bits{},attr{},option{},initial{}; };
     struct RpcServer { uint32_t sd,sid,func,buf,queue; };
     struct PendingCall { uint32_t sd,fno,buf,size; uint64_t ticket; };
 
@@ -362,7 +362,19 @@ inline void IopKernel::installCore() {
         if(it->second.count>0) { --it->second.count; k.ret(0); } else k.ret(uint32_t(-419));
     });
     // thevent: WaitEventFlag modes AND=0/OR=1, clear bit 0x10, clear-pattern 0x20.
-    add("thevent",4,[](IopKernel& k){ uint32_t p=k.arg(0); int id=k.next_id_++; k.events_[id]={k.read(p+8,4),k.read(p,4),k.read(p+4,4)}; k.ret(uint32_t(id)); });
+    add("thevent",4,[](IopKernel& k){ uint32_t p=k.arg(0); int id=k.next_id_++; k.events_[id]={k.read(p+8,4),k.read(p,4),k.read(p+4,4),k.read(p+8,4)}; k.ret(uint32_t(id)); });
+    // ReferEventFlagStatus / iReferEventFlagStatus -> iop_event_info_t {attr, option, initBits, currBits, numThreads}
+    auto refer_event=[](IopKernel& k){
+        int id=int(k.arg(0)); auto it=k.events_.find(id); uint32_t info=k.arg(1);
+        if(it==k.events_.end()) { k.ret(uint32_t(-409)); return; }
+        uint32_t waiting=0;
+        for(auto& [tid,t]:k.threads_) if(t.state==State::Waiting && t.wait==Wait::Event && t.wait_id==id) ++waiting;
+        const auto& e=it->second;
+        uint32_t v[5]={e.attr,e.option,e.initial,e.bits,waiting};
+        for(int i=0;i<5;++i) k.write(info+i*4,v[i],4);
+        k.ret(0);
+    };
+    add("thevent",13,refer_event); add("thevent",14,refer_event);
     add("thevent",5,[](IopKernel& k){ k.events_.erase(int(k.arg(0))); k.ret(0); });
     auto set_event=[](IopKernel& k){
         int id=int(k.arg(0)); auto it=k.events_.find(id); if(it==k.events_.end()) { k.ret(uint32_t(-409)); return; }
@@ -482,7 +494,7 @@ inline void IopKernel::installCore() {
         if(code==-9) { k.ret(0x0223); return; }           // 0xFFFFFFF7: cdvdman version
         if(code==-11) {                                    // 0xFFFFFFF5: cdvdman interrupt event flag
             // cdvdman leaves it at 0x29 once idle; MP2R reads complete synchronously, so it stays idle.
-            if(!k.cd_intr_event) { k.cd_intr_event=k.next_id_++; k.events_[k.cd_intr_event]={0x29,2,0}; }
+            if(!k.cd_intr_event) { k.cd_intr_event=k.next_id_++; k.events_[k.cd_intr_event]={0x29,2,0,0}; }
             k.ret(uint32_t(k.cd_intr_event)); return;
         }
         if(code==-8) { k.ret(1); return; }                // 0xFFFFFFF8: spin control

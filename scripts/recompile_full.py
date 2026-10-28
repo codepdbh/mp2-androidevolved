@@ -31,7 +31,12 @@ for entry,parts in ranges.items():
     gaps=[parts[i+1][0]-parts[i][1] for i in range(len(parts)-1)]
     i=bisect.bisect_right(starts,low)
     if low!=entry or any(s<high for s in starts[i:i+1]) or max(gaps)>64:
-        skipped.append(entry); continue
+        # Interleaved bodies (another function inside the span, or the entry not first) are still
+        # translated over the full span: overlapping translations execute identically, and the
+        # entry table prefers function starts. Spans beyond any real function size stay out.
+        if high-low>0x8000 or low in merged: skipped.append(entry); continue
+        merged[low]={'Name':f'mp2_{low:08X}','Start':f'0x{low:08X}','End':f'0x{high:08X}','Size':str(high-low)}
+        continue
     merged[entry]={'Name':f'mp2_{entry:08X}','Start':f'0x{entry:08X}','End':f'0x{high:08X}','Size':str(high-low)}
 # Address-taken entries (pointer tables) become functions ending at the next known start.
 import struct
