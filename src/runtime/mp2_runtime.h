@@ -259,7 +259,24 @@ public:
         if(e) std::sscanf(e,"%llu,%llu,%llu,%llx",&v[0],&v[1],&v[2],&v[3]);
         return v;
     }();
+    // MP2R_PAD_SEQ=<vblank>:<mask hex>:<duration>;...: one-off presses at given vblanks (menu navigation).
+    struct PadStep { unsigned long long at,mask,duration; };
+    std::vector<PadStep> pad_seq=[]{
+        std::vector<PadStep> v; const char* e=std::getenv("MP2R_PAD_SEQ");
+        while(e && *e) {
+            PadStep st{}; int used=0;
+            if(std::sscanf(e,"%llu:%llx:%llu%n",&st.at,&st.mask,&st.duration,&used)<3) break;
+            v.push_back(st); e+=used; if(*e==';') ++e;
+        }
+        return v;
+    }();
     void scriptedPad() {
+        if(!pad_seq.empty()) {
+            uint16_t held=0;
+            for(const auto& st:pad_seq) if(vblanks>=st.at && vblanks<st.at+st.duration) held|=uint16_t(st.mask);
+            sio2.pads[0].buttons=uint16_t(~held);
+            return;
+        }
         if(!pad_script[1] || vblanks<pad_script[0]) return;
         bool down=(vblanks-pad_script[0])%pad_script[1]<pad_script[2];
         sio2.pads[0].buttons=uint16_t(down?~pad_script[3]:0xffff);
@@ -542,7 +559,7 @@ public:
             auto result=iop_kernel.stopModule(id,args);
             if(!iop_kernel.stop_reason.empty()) iop.stop_reason=iop_kernel.stop_reason;
             return result;
-        });
+        },[this](int id){ return iop_kernel.unloadModule(id); });
         mp2r::registerCdvdServices(iop,disc?&*disc:nullptr,[this](uint32_t cmd,uint32_t packet,uint32_t size) -> int32_t {
             std::vector<uint8_t> in(size),out(4);
             std::memcpy(in.data(),iop.ram(packet,size),size);

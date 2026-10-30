@@ -28,7 +28,7 @@ public:
     uint64_t fast_clear_blocks{};
     bool profile{};
     uint64_t draw_ns{};
-    std::ostream* trace{}; uint64_t trace_from{}; unsigned trace_left{40};
+    std::ostream* trace{}; uint64_t trace_from{}; unsigned trace_left{2000};
 
     // ---------------- swizzles (word / halfword / byte / nibble addresses)
     static constexpr int block32[4][8]={{0,1,4,5,16,17,20,21},{2,3,6,7,18,19,22,23},{8,9,12,13,24,25,28,29},{10,11,14,15,26,27,30,31}};

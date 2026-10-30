@@ -182,6 +182,19 @@ public:
         if(log) *log<<"IOP module "<<name<<" base=0x"<<std::hex<<base<<" entry=0x"<<base+entry<<" result="<<result<<std::dec<<'\n';
         return stop_reason.empty() && (result&3)!=1; // NO_RESIDENT_END keeps nothing loaded
     }
+    // UnloadModule: a stopped module's image is released (KE_UNKNOWN_MODULE -202, KE_NOT_STOPPED -210).
+    int unloadModule(int id) {
+        auto found=resident_modules.find(id);
+        if(found==resident_modules.end()) return -202;
+        if(!found->second.stopped) return -210;
+        uint32_t lo=found->second.base,hi=lo+found->second.size;
+        for(auto it=library_tables_.begin();it!=library_tables_.end();) {      // the module's libraries go with it
+            if(it->second>=lo && it->second<hi) { libraries_.erase(it->first); it=library_tables_.erase(it); } else ++it;
+        }
+        sif.freeBlock(found->second.base);
+        resident_modules.erase(found);
+        return id;
+    }
     std::pair<int,int> stopModule(int id,const std::string& args) {
         auto found=resident_modules.find(id);
         if(found==resident_modules.end()) return {-202,0}; // KE_UNKNOWN_MODULE
@@ -347,7 +360,7 @@ public:
     }
     // IOP reboot: every module, thread and kernel object disappears.
     void reset() {
-        stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
+        stubs_.clear(); libraries_.clear(); library_tables_.clear(); threads_.clear(); semas_.clear(); events_.clear();
         queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); alarms.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear(); cd_completions.clear();
         active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; devctl_scratch_=0; loaded.clear(); resident_modules.clear();
         sif.user_command=nullptr;
@@ -363,6 +376,7 @@ private:
     std::array<uint8_t,0x400> scratch_{};
     std::map<uint32_t,std::pair<std::string,int>> stubs_;
     std::map<std::string,std::vector<uint32_t>> libraries_;   // LLE exports
+    std::map<std::string,uint32_t> library_tables_;            // export table address (owner module memory)
     std::map<int,Thread> threads_;
     std::map<int,Sema> semas_;
     std::map<int,EventFlag> events_;
@@ -510,6 +524,9 @@ inline void IopKernel::installCore() {
     add("loadcore",6,[](IopKernel& k){
         uint32_t t=k.arg(0); if(k.read(t,4)!=0x41c00000u) { k.ret(-1u); return; }
         std::string lib; for(int i=0;i<8;++i) { char c=char(k.read(t+12+i,1)); if(!c) break; lib+=c; }
+        // A library name is registered once; a second module (or a restart) gets KE_LIBRARY_FOUND.
+        if(k.libraries_.count(lib)) { if(k.log) *k.log<<"IOP library "<<lib<<" already registered\n"; k.ret(uint32_t(-212)); return; }
+        k.library_tables_[lib]=t;
         auto& f=k.libraries_[lib]; f.clear();
         for(uint32_t a=t+20;k.read(a,4);a+=4) f.push_back(k.read(a,4));
         if(k.log) *k.log<<"IOP library "<<lib<<" exports="<<f.size()<<'\n';
@@ -552,6 +569,25 @@ inline void IopKernel::installCore() {
         t.pc=t.entry; t.priority=t.initial_priority; k.ready(t,0); k.ret(0); k.yieldTo();
     });
     add("thbase",8,[](IopKernel& k){ k.threads_.at(k.current_).state=State::Dormant; k.current_=0; });
+    // TerminateThread(10)/iTerminateThread(11): another thread becomes dormant, leaving any wait
+    // (KE_ILLEGAL_THID -406 for the caller itself, KE_UNKNOWN_THID -407, KE_DORMANT -413).
+    auto terminate=[](IopKernel& k){
+        int id=int(k.arg(0));
+        if(id==k.current_) { k.ret(uint32_t(-406)); return; }
+        auto it=k.threads_.find(id); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
+        if(it->second.state==State::Dormant) { k.ret(uint32_t(-413)); return; }
+        it->second.state=State::Dormant; it->second.wait=Wait::None; it->second.wait_id=0; it->second.wakeups=0;
+        k.ret(0);
+    };
+    add("thbase",10,terminate); add("thbase",11,terminate);
+    // DeleteThread(5): only a dormant thread other than the caller (KE_NOT_DORMANT -414); frees its stack.
+    add("thbase",5,[](IopKernel& k){
+        int id=int(k.arg(0));
+        if(id==k.current_) { k.ret(uint32_t(-406)); return; }
+        auto it=k.threads_.find(id); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
+        if(it->second.state!=State::Dormant) { k.ret(uint32_t(-414)); return; }
+        k.sif.freeBlock(it->second.stack); k.threads_.erase(it); k.ret(0);
+    });
     add("thbase",14,[](IopKernel& k){
         int id=int(k.arg(0)); if(!id) id=k.current_;
         auto it=k.threads_.find(id); if(it==k.threads_.end()) { k.ret(uint32_t(-407)); return; }
