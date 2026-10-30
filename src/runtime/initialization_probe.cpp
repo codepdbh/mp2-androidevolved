@@ -39,6 +39,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
     if(max_checkpoints==0) throw std::runtime_error("Zero checkpoint budget");
     MP2InitializationRuntime host(log,kernel_table_base,max_checkpoints); host.registerGuestFunctions();
     host.boot_path=boot_path; host.guest_ram=ram.data();
+    if(std::getenv("MP2R_UNLIMITED_CHECKPOINTS")) host.checkpoint_limit=UINT64_MAX;   // long runs: only the step budget applies
     host.present_frame=callbacks.present_frame;
     host.compensate_scene_preview=callbacks.compensate_scene_preview;
     host.profile=host.gs.profile=callbacks.profile;
@@ -82,7 +83,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
                 log<<std::dec<<'\n'; watch=0;
             }
             host.clockTimers();
-            if(host.checkpoints>=max_checkpoints) { host.reason="checkpoint_budget"; break; }
+            if(host.checkpoints>=host.checkpoint_limit) { host.reason="checkpoint_budget"; break; }
             if(cpu.pc==MP2InitializationRuntime::interrupt_return && host.interrupt) { host.finishHandler(&cpu); continue; }
             if(host.beginInterrupt(&cpu)) continue;
             if(host.idle && !host.interrupt) {     // handlers entered from idle run normally

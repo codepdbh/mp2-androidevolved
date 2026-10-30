@@ -48,6 +48,14 @@ public:
             int64_t pending=branch; branch=-1;
             if(trace) { *trace<<std::hex<<"VU "<<at<<" lo="<<lower<<" up="<<upper<<" vi:"; for(int r=1;r<16;++r) *trace<<' '<<vi[r]; *trace<<std::dec<<'\n'; }
             if(!pair(upper,lower,branch)) return false;
+            if(trace) {                                                   // vector registers written by this pair
+                auto show=[&](unsigned n){ *trace<<"   vf"<<n<<"=("<<vf[n][0]<<","<<vf[n][1]<<","<<vf[n][2]<<","<<vf[n][3]<<")"; };
+                unsigned op=upper&63;
+                if(op<0x3c) show((upper>>6)&31);
+                else { unsigned sp=(((upper>>6)&31)<<2)|(upper&3); if(sp>=0x10 && sp<0x18) show((upper>>16)&31); if(sp==0x1d) show((upper>>16)&31); }
+                if(!(upper&0x80000000u)) { unsigned lop=lower>>25; if(lop==0x00 || (lower>>31 && ((lower&0x3c)==0x3c))) show((lower>>16)&31); }
+                *trace<<'\n';
+            }
             if(pending>=0) pc=uint32_t(pending);
             if(ending) { finishPending(); return true; }
             if(upper&0x40000000u) ending=true;

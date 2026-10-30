@@ -148,7 +148,7 @@ public:
         if(timer2.advanceBusCycles(cycles)) intc.raise(11);
         if(timer3.advanceBusCycles(cycles)) intc.raise(12);
         auto blank=vblank.advance(uint64_t(ns));
-        if(blank&mp2r::EeVblank::Start) { ++vblanks; if(dump_frames && vblanks%frame_every==0) dumpFrame(); if(present_frame) presentFrame(); intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
+        if(blank&mp2r::EeVblank::Start) { ++vblanks; scriptedPad(); if(dump_frames && vblanks%frame_every==0) dumpFrame(); if(present_frame) presentFrame(); intc.raise(2); gs_csr|=8u; if(guest_ram) signalVsync(guest_ram); iop_kernel.signalVblank(true); }
         if(blank&mp2r::EeVblank::End) { intc.raise(3); iop_kernel.signalVblank(false); }
     }
     // ---- Interrupt delivery (INT0 = INTC, INT1 = DMAC), modelled on the EE kernel dispatcher:
@@ -252,6 +252,18 @@ public:
         return true;
     }
     mp2r::GsRenderer gs;
+    // MP2R_PAD_PRESS=<start vblank>,<period>,<duration>,<button mask hex>: scripted DualShock 2 presses on
+    // port 1 (mask bits: 3 START, 4-7 UP/RIGHT/DOWN/LEFT, 12 TRIANGLE, 13 CIRCLE, 14 CROSS, 15 SQUARE).
+    std::array<unsigned long long,4> pad_script=[]{
+        std::array<unsigned long long,4> v{}; const char* e=std::getenv("MP2R_PAD_PRESS");
+        if(e) std::sscanf(e,"%llu,%llu,%llu,%llx",&v[0],&v[1],&v[2],&v[3]);
+        return v;
+    }();
+    void scriptedPad() {
+        if(!pad_script[1] || vblanks<pad_script[0]) return;
+        bool down=(vblanks-pad_script[0])%pad_script[1]<pad_script[2];
+        sio2.pads[0].buttons=uint16_t(down?~pad_script[3]:0xffff);
+    }
     // MP2R_DUMP_FRAMES=<dir> writes the displayed frame as BMP every MP2R_FRAME_EVERY vblanks (default 50).
     const char* dump_frames=std::getenv("MP2R_DUMP_FRAMES");
     unsigned frame_every=[]{ const char* v=std::getenv("MP2R_FRAME_EVERY"); return v?unsigned(std::max(1,std::atoi(v))):50u; }();
@@ -512,7 +524,7 @@ public:
     uint32_t memory_address{};
     std::string reason;
     std::ostream& log;
-    unsigned checkpoint_limit;
+    uint64_t checkpoint_limit;
     explicit MP2InitializationRuntime(std::ostream& output,uint32_t table_base,unsigned limit)
         :syscall_table(table_base),log(output),checkpoint_limit(limit) {
         iop.log=&log; iop_kernel.log=&log; libsd.install(iop_kernel); sio2.install(iop_kernel);

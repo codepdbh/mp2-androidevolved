@@ -13,7 +13,7 @@ public:
     struct Thread { uint32_t gp{},stack{},size{},args{},root{},initial_sp{}; } thread;
     uint32_t heap_base{},heap_size_request{},blocked_target{},blocked_source{};
     std::array<uint32_t,128> syscalls{};
-    unsigned syscall_count{},checkpoints{};
+    unsigned syscall_count{}; uint64_t checkpoints{};
     bool blocked{};
     bool eeCheckpointDue(uint32_t=32) noexcept { return ++checkpoints%4096==0; }
     static bool isSpecialAddress(uint32_t a) { return Ps2IsSpecialAddress(a); }
