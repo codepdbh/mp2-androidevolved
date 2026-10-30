@@ -2,6 +2,7 @@
 #include "emu_clock.h"
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <chrono>
 #include <cstdio>
 #include <stdexcept>
@@ -29,7 +30,7 @@ public:
     using AsyncHandler=std::function<void(uint32_t function,uint32_t buffer,uint32_t size,uint64_t ticket)>;
     struct Server { uint32_t sid,token,buffer,size; Handler handler; std::string module; AsyncHandler async; };
 private:
-    struct CallState { uint32_t rec,pkt,rpc,cd,recvbuf,rsize,rmode; };
+    struct CallState { uint32_t rec,pkt,rpc,cd,recvbuf,rsize,rmode,sid{},fno{}; };
     std::map<uint64_t,CallState> pending_calls_;
     uint64_t next_ticket_=1;
     uint8_t* ee_{};
@@ -107,7 +108,10 @@ public:
     }
     // User-defined SIF commands (cid without bit 31) handled by loaded IOP modules.
     std::function<bool(uint32_t cid,uint32_t packet)> user_command;
-    std::map<uint64_t,uint64_t> rpc_histogram;                              // (sid<<32 | fno) -> calls
+    std::map<uint64_t,uint64_t> rpc_histogram;
+    // MP2R_RPC_TRACE=<hex sid>: log the first calls/replies of that server.
+    uint32_t rpc_trace_sid=[]{ const char* v=std::getenv("MP2R_RPC_TRACE"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
+    unsigned rpc_trace_count{};                              // (sid<<32 | fno) -> calls
     void completeCall(uint64_t ticket,uint32_t reply) {
         auto it=pending_calls_.find(ticket);
         if(it==pending_calls_.end()) throw std::runtime_error("Unknown IOP RPC completion");
@@ -223,7 +227,12 @@ private:
                 for(auto& [sid,s]:servers_) if(s.token==sd) server=&s;
                 if(!server) { stop_reason="iop_rpc_call_unbound sd=0x"+hex(sd); return; }
                 ++rpc_calls; ++rpc_histogram[(uint64_t(server->sid)<<32)|fno];
-                CallState state{rec,pkt,rpc,cd,recvbuf,rsize,rmode};
+                CallState state{rec,pkt,rpc,cd,recvbuf,rsize,rmode,server->sid,fno};
+                if(log && rpc_trace_sid==server->sid && rpc_trace_count<60) {
+                    ++rpc_trace_count; *log<<"RPC call sid=0x"<<std::hex<<server->sid<<" fno=0x"<<fno<<" ssize=0x"<<ssize<<" args:";
+                    for(uint32_t j=0;j<std::min(ssize,32u);++j) { char h[4]; std::snprintf(h,sizeof h," %02x",unsigned(*ram(server->buffer+j,1))); *log<<h; }
+                    *log<<std::dec<<'\n';
+                }
                 if(server->async) {
                     auto ticket=next_ticket_++; pending_calls_[ticket]=state;
                     server->async(fno,server->buffer,ssize,ticket); return;
@@ -248,6 +257,11 @@ private:
     }
     void finishCall(const CallState& s,uint32_t reply) {
         auto data=reply?copyOut(reply,(s.rsize+3)&~3u):std::vector<uint8_t>{};
+        if(log && rpc_trace_sid==s.sid && rpc_trace_count<60) {
+            *log<<"RPC reply sid=0x"<<std::hex<<s.sid<<" fno=0x"<<s.fno<<" size=0x"<<data.size()<<":";
+            for(size_t j=0;j<std::min<size_t>(data.size(),48);++j) { char h[4]; std::snprintf(h,sizeof h," %02x",unsigned(data[j])); *log<<h; }
+            *log<<std::dec<<'\n';
+        }
         if(s.rmode) { send(0x80000008,{s.rec,s.pkt,s.rpc,s.cd,0x8000000a,0,0,0},s.recvbuf,std::move(data)); return; }
         if(!ee_) throw std::runtime_error("IOP RPC completion before any EE transfer");
         if(!data.empty()) std::memcpy(ee_+(s.recvbuf&0x1ffffff),data.data(),data.size());

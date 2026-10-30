@@ -48,7 +48,7 @@ index a2bcb77..026c92c 100644
      }
  
 diff --git a/ps2xRuntime/include/ps2_runtime_macros.h b/ps2xRuntime/include/ps2_runtime_macros.h
-index 0485d50..c128180 100644
+index 0485d50..9e3a4df 100644
 --- a/ps2xRuntime/include/ps2_runtime_macros.h
 +++ b/ps2xRuntime/include/ps2_runtime_macros.h
 @@ -766,8 +766,10 @@ inline __m128i ps2_ppacb(__m128i rs, __m128i rt)
@@ -64,7 +64,18 @@ index 0485d50..c128180 100644
  
  // Packed Multiply-Add (PMADD)
  #define PS2_PMADDW(a, b) _mm_add_epi32(_mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(1, 0, 3, 2)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(1, 0, 3, 2))), _mm_mullo_epi32(_mm_shuffle_epi32((__m128i)(a), _MM_SHUFFLE(3, 2, 1, 0)), _mm_shuffle_epi32((__m128i)(b), _MM_SHUFFLE(3, 2, 1, 0))))
-@@ -955,8 +957,10 @@ inline __m128i ps2_qfsrv(__m128i rs, __m128i rt, uint32_t sa)
+@@ -853,7 +855,9 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
+ #define FPU_FLOOR_W_S(a) ((int32_t)floorf((float)(a)))
+ #define FPU_CVT_S_W(a) ((float)(int32_t)(a))
+ #define FPU_CVT_S_L(a) ((float)(int64_t)(a))
+-#define FPU_CVT_W_S(a) ((int32_t)nearbyintf((float)(a)))
++// R5900 CVT.W.S always truncates toward zero and saturates out-of-range values.
++inline int32_t ps2_cvt_w_s(float v) { return v>=2147483520.0f?INT32_MAX:v<=-2147483648.0f?INT32_MIN:(int32_t)v; }
++#define FPU_CVT_W_S(a) ps2_cvt_w_s((float)(a))
+ #define FPU_CVT_L_S(a) ((int64_t)(float)(a))
+ #define FPU_C_F_S(a, b) (0)
+ #define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
+@@ -955,8 +959,10 @@ inline __m128i ps2_qfsrv(__m128i rs, __m128i rt, uint32_t sa)
  }
  #define PS2_QFSRV(rs, rt, sa) ps2_qfsrv((__m128i)(rs), (__m128i)(rt), (uint32_t)(sa))
  #define PS2_PCPYLD(rs, rt) _mm_unpacklo_epi64(rt, rs)

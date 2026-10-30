@@ -23,6 +23,7 @@ public:
     bool busy{};
     std::string stop_reason;
     uint64_t commands{},macroblocks{};
+    std::FILE* debug{};                        // per-coefficient trace (diagnostics)
     std::vector<uint8_t> output;            // bytes ready for channel 3
 
     void inputBytes(const uint8_t* data,size_t bytes) { in_.insert(in_.end(),data,data+bytes); input_total+=bytes; run(); }
@@ -226,8 +227,9 @@ private:
         for(;;) {
             int value; unsigned len;
             if(first && peek(1)==1) { value=0x0001; len=1; }       // first non-intra coefficient: '1s' is run 0 level 1
-            else if(!(table_b15?lookup(*this,b15_,value,len):lookup(*this,b14_,value,len))) return false;
+            else if(!(table_b15?lookup(*this,b15_,value,len):lookup(*this,b14_,value,len))) { if(debug) std::fprintf(debug,"blk%d pos=%zu NO CODE peek=%08x i=%d\n",component,pos_,peek(32),i); return false; }
             first=false;
+            if(debug) std::fprintf(debug,"blk%d pos=%zu value=0x%x len=%u peek=%08x\n",component,pos_,unsigned(value),len,peek(32));
             skip(len);
             if(value==-1) break;
             int run,level;

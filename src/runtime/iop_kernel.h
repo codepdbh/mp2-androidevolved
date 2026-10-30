@@ -43,7 +43,8 @@ public:
     std::vector<Alarm> alarms;
     // MP2R_IOP_TRACE_AT=<hex pc> logs 3000 IOP control transfers from the first time a thread reaches it.
     uint32_t trace_at=[]{ const char* v=std::getenv("MP2R_IOP_TRACE_AT"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
-    unsigned trace_left{},printf_trace{};
+    unsigned trace_left{},printf_trace{},dma_trace{};
+    std::array<std::array<uint32_t,3>,16> recent_reads{}; size_t recent_read_index{};
     unsigned send_cmd_trace{},user_cmd_trace{},wake_trace{};
     uint32_t mc_command_handler{},mc_devid_handler{},kelf_path_callback{},strtok_next{};
     std::array<bool,64> irq_enabled{};
@@ -279,6 +280,9 @@ public:
     void dumpState(std::ostream& out) const {
         static const char* states[]={"dormant","ready","waiting"};
         static const char* waits[]={"-","sema","event","sleep","delay","rpcloop","vblank"};
+        out<<"IOP last sceCdRead:";
+        for(size_t i=0;i<recent_reads.size();++i) { const auto& r=recent_reads[(recent_read_index+i)%recent_reads.size()]; if(r[1]) out<<" "<<r[0]<<"+"<<r[1]; }
+        out<<'\n';
         out<<"IOP threads (current "<<current_<<"):\n";
         for(const auto& [id,t]:threads_)
             out<<"  #"<<id<<" prio="<<t.priority<<' '<<states[int(t.state)]<<" wait="<<waits[int(t.wait)]<<" id="<<t.wait_id
@@ -290,9 +294,23 @@ public:
     // Drive command completion: with streaming active, cdvdman's interrupt handler calls the
     // streaming module's callback (flag 1 -> stm0, 2 -> stm1). Callbacks that start a new command
     // are queued so completions do not nest.
-    void cdCommandComplete() {
+    // A drive command finishes after its transfer time: the stream callback runs from the
+    // scheduler once the emulated clock reaches it, never inside the call that started it.
+    struct CdCompletion { std::chrono::steady_clock::time_point due; uint32_t callback; };
+    std::vector<CdCompletion> cd_completions;
+    void cdCommandComplete(std::chrono::nanoseconds delay={}) {
         uint32_t cb=cd_stream_flag==1?cd_stm_callback[0]:cd_stream_flag==2?cd_stm_callback[1]:0;
-        if(!cb) return;
+        cd_completions.push_back({mp2r::EmuClock::now()+delay,cb});
+    }
+    void fireCdCompletions(bool all=false) {
+        auto now=mp2r::EmuClock::now();
+        for(size_t i=0;i<cd_completions.size() && stop_reason.empty();) {
+            if(!all && cd_completions[i].due>now) { ++i; continue; }
+            uint32_t cb=cd_completions[i].callback; cd_completions.erase(cd_completions.begin()+long(i));
+            if(cb) runCdCallback(cb);
+        }
+    }
+    void runCdCallback(uint32_t cb) {
         cd_pending_callbacks.push_back(cb);
         if(cd_in_callback) return;
         cd_in_callback=true;
@@ -330,7 +348,7 @@ public:
     // IOP reboot: every module, thread and kernel object disappears.
     void reset() {
         stubs_.clear(); libraries_.clear(); threads_.clear(); semas_.clear(); events_.clear();
-        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); alarms.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear();
+        queue_thread_.clear(); servers_.clear(); calls_.clear(); cmd_handlers_.clear(); devices.clear(); alarms.clear(); cd_intr_event=0; cd_stm_callback={}; cd_pending_callbacks.clear(); cd_completions.clear();
         active_call_.reset(); rpc_saved_.reset(); current_=0; call_stack_=0; devctl_scratch_=0; loaded.clear(); resident_modules.clear();
         sif.user_command=nullptr;
         dma_completions_.clear(); interrupts_enabled_=true;
@@ -450,7 +468,7 @@ private:
     void wakeDelayed() {
         fireDmaCompletions();
         fireAlarms();
-        if(!nested_) for(auto& t:ticks) { t(*this); if(!stop_reason.empty()) return; }
+        if(!nested_) { fireCdCompletions(); for(auto& t:ticks) { t(*this); if(!stop_reason.empty()) return; } }
         auto now=mp2r::EmuClock::now();
         for(auto& [id,t]:threads_) if(t.state==State::Waiting && t.wait==Wait::Delay && now>=t.wake_at) ready(t,0);
     }
@@ -706,6 +724,7 @@ inline void IopKernel::installCore() {
         for(uint32_t i=0;i<count;++i) {
             uint32_t src=k.read(list+i*16,4),dest=k.read(list+i*16+4,4),size=(k.read(list+i*16+8,4)+3)&~3u;
             std::memcpy(k.ee_memory(dest&0x1ffffff),k.sif.ram(src,size),size);
+            if(k.log && ++k.dma_trace<=40) { *k.log<<"IOP SetDma dest=0x"<<std::hex<<dest<<" size=0x"<<size<<":"; for(uint32_t j=0;j<std::min(size,48u);++j) { char h[4]; std::snprintf(h,sizeof h," %02x",unsigned(k.read(src+j,1))); *k.log<<h; } *k.log<<std::dec<<'\n'; }
         }
         k.ret(1);
     };
@@ -784,9 +803,10 @@ inline void IopKernel::installCore() {
         if(!k.disc) { k.stop("iop_cd_without_disc"); return; }
         uint32_t lbn=k.arg(0),count=k.arg(1),buf=k.arg(2);
         if(k.log && ++k.cd_trace<=40) *k.log<<"IOP sceCdRead lbn="<<lbn<<" count="<<count<<" buf=0x"<<std::hex<<buf<<" mode=0x"<<k.read(k.arg(3),4)<<std::dec<<" flag="<<k.cd_stream_flag<<'\n';
+        k.recent_reads[k.recent_read_index++%k.recent_reads.size()]={lbn,count,buf};
         for(uint32_t i=0;i<count;++i) k.disc->read(lbn+i,k.sif.ram(buf+i*2048,2048));
         k.cd_reads+=count; k.ret(1);
-        k.cdCommandComplete();
+        k.cdCommandComplete(std::chrono::nanoseconds(uint64_t(count)*2048ull*1000000000ull/5540000ull));   // DVD 4x CAV
     });
     add("cdvdman",48,[](IopKernel& k){ k.cd_stm_callback[0]=k.arg(0); k.ret(0); });   // sceCdstm0Cb
     add("cdvdman",49,[](IopKernel& k){ k.cd_stm_callback[1]=k.arg(0); k.ret(0); });   // sceCdstm1Cb
@@ -802,7 +822,10 @@ inline void IopKernel::installCore() {
     add("secrman",5,[](IopKernel& k){ k.mc_devid_handler=k.arg(0); k.ret(0); });     // SecrSetMcDevIDHandler
     add("secrman",6,[](IopKernel& k){ k.ret(0); });                                  // SecrAuthCard: not authenticated
     add("secrman",7,[](IopKernel& k){ k.ret(0); });                                  // SecrResetAuthCard
-    add("cdvdman",11,[](IopKernel& k){ k.ret(0); });     // sceCdSync: no command in progress
+    add("cdvdman",11,[](IopKernel& k){                     // sceCdSync(mode): 0 waits for completion, otherwise 1 while busy
+        if(k.arg(0)==0) { k.fireCdCompletions(true); k.ret(0); return; }
+        k.ret(k.cd_completions.empty()?0:1);
+    });
     add("cdvdman",12,[](IopKernel& k){ k.ret(0x14); });  // sceCdGetDiskType: SCECdPS2DVD
     add("cdvdman",13,[](IopKernel& k){ k.ret(2); });     // sceCdDiskReady: SCECdComplete
     add("cdvdman",50,[](IopKernel& k){                    // sceCdSC (system control), cdvdman 2.35 semantics
