@@ -72,7 +72,8 @@ static int guest_module_path(uint32_t handle, char* out, size_t size) {
     const mp2_module_info_t* m = handle ? module_by_base(handle) : exe_module();
     if (!m) return 0;
     int in_driver = !_stricmp(m->name, "binkw32.dll") || !_stricmp(m->name, "e2_d3d8_driver_mfc.dll");
-    snprintf(out, size, "%s\\%s%s", g_mp2_game_root, in_driver ? "e2driver\\" : "", m->name);
+    int is_plugin = strstr(m->name, ".asi") != NULL;
+    snprintf(out, size, "%s\\%s%s", g_mp2_game_root, in_driver ? "e2driver\\" : is_plugin ? "scripts\\" : "", m->name);
     return 1;
 }
 
@@ -130,6 +131,8 @@ static void s_LoadLibraryA(void) {
             mp2_stop("FRONTERA", "el motor pide Direct3D: primer punto gráfico alcanzado", MP2_EXIT_BOUNDARY);
             return;
         }
+        /* Aquí es cuando el cargador ASI de la carpeta del juego arranca los plugins. */
+        if (g_mp2_widescreen) mp2_load_widescreen();
         /* Siempre el del sistema: el d3d9.dll de la carpeta del juego es un cargador ASI. */
         char path[MAX_PATH];
         GetSystemDirectoryA(path, MAX_PATH);
@@ -139,6 +142,37 @@ static void s_LoadLibraryA(void) {
         return;
     }
     RET(LoadLibraryA(name), 1);
+}
+
+/* TLS estático del plugin: un bloque compartido, en el índice 0. Los plugins de esta
+ * época lo usan para los guardas de static, no para datos por hilo de verdad. */
+void mp2_load_widescreen(void) {
+    static int loaded;
+    if (loaded) return;
+    loaded = 1;
+    const mp2_module_info_t* m = find_module("MaxPayne2.WidescreenFix.asi");
+    if (!m) { fprintf(stderr, "[MP2:WSF] el módulo no está en esta compilación\n"); return; }
+    uint8_t* b = (uint8_t*)(uintptr_t)m->base;
+    IMAGE_NT_HEADERS32* nt = (IMAGE_NT_HEADERS32*)(b + ((IMAGE_DOS_HEADER*)b)->e_lfanew);
+    IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+    if (dd.VirtualAddress) {
+        IMAGE_TLS_DIRECTORY32* tls = (IMAGE_TLS_DIRECTORY32*)(b + dd.VirtualAddress);
+        uint32_t bytes = tls->EndAddressOfRawData - tls->StartAddressOfRawData;
+        uint8_t* block = (uint8_t*)calloc(1, bytes + tls->SizeOfZeroFill + 64);
+        memcpy(block, (void*)(uintptr_t)tls->StartAddressOfRawData, bytes);
+        *(uint32_t*)(uintptr_t)tls->AddressOfIndex = 0;
+        ((uint32_t*)(uintptr_t)native32_tls_array)[0] = (uint32_t)(uintptr_t)block;
+        const uint32_t* callback = (const uint32_t*)(uintptr_t)tls->AddressOfCallBacks;
+        for (; callback && *callback; callback++) {
+            uint32_t args[3] = { m->base, DLL_PROCESS_ATTACH, 0 };
+            fprintf(stderr, "[MP2:WSF] callback TLS %08X\n", *callback);
+            native32_call_guest(*callback, 3, args);
+        }
+    }
+    uint32_t saved_esp = g_esp;
+    int ok = mp2_run_dllmain(m->name, m->base, m->entry);
+    g_esp = saved_esp;
+    fprintf(stderr, "[MP2:WSF] DllMain -> %d\n", ok);
 }
 
 static void s_LoadLibraryW(void) {
@@ -387,6 +421,12 @@ static void s_CreateDirectoryA(void) {
     RET(0, 2);
 }
 
+/* La WidescreenFix guarda su .ini junto al plugin: la instalación no se toca. */
+static void s_WritePrivateProfileStringA(void) {
+    fprintf(stderr, "[MP2:WSF] WritePrivateProfileStringA [%s] %s ignorado\n", ARG(0) ? (const char*)(uintptr_t)ARG(0) : "", ARG(1) ? (const char*)(uintptr_t)ARG(1) : "");
+    RET(1, 4);
+}
+
 static void s_DeleteFileA(void) {
     char path[MAX_PATH];
     RET(DeleteFileA(sandbox_path((const char*)(uintptr_t)ARG(0), path, sizeof path)), 1);
@@ -397,7 +437,17 @@ static void s_CopyFileA(void) {
     RET(CopyFileA((const char*)(uintptr_t)ARG(0), sandbox_path((const char*)(uintptr_t)ARG(1), path, sizeof path), ARG(2)), 3);
 }
 
+/* El plugin protege, escribe y vuelve a proteger: al volver se deshacen los excluidos. */
+static void s_VirtualProtect(void) {
+    BOOL ok = VirtualProtect((void*)(uintptr_t)ARG(0), ARG(1), ARG(2), (PDWORD)(uintptr_t)ARG(3));
+    mp2_measure_restore_skipped();
+    RET(ok, 4);
+}
+
 /* ---- fin del proceso y excepciones ---- */
+/* El filtro del CRT invitado no sirve aquí: sustituiría al informe del host. */
+static void s_SetUnhandledExceptionFilter(void) { RET(0, 1); }
+
 static void s_ExitProcess(void) {
     char text[64];
     snprintf(text, sizeof text, "ExitProcess(%u)", ARG(0));
@@ -425,7 +475,7 @@ native32_shim_t g_mp2_shims[] = {
     { "ShowWindow", s_ShowWindow }, { "SetForegroundWindow", s_SetForegroundWindow },
     { "SystemParametersInfoA", s_SystemParametersInfoA }, { "SetWindowPos", s_SetWindowPos },
     { "CreateFileA", s_CreateFileA }, { "CreateFileW", s_CreateFileW }, { "CreateDirectoryA", s_CreateDirectoryA },
-    { "DeleteFileA", s_DeleteFileA }, { "CopyFileA", s_CopyFileA },
-    { "ExitProcess", s_ExitProcess }, { "RaiseException", mp2_seh_RaiseException }, { "RtlUnwind", mp2_seh_RtlUnwind },
+    { "WritePrivateProfileStringA", s_WritePrivateProfileStringA }, { "DeleteFileA", s_DeleteFileA }, { "CopyFileA", s_CopyFileA },
+    { "VirtualProtect", s_VirtualProtect }, { "SetUnhandledExceptionFilter", s_SetUnhandledExceptionFilter }, { "ExitProcess", s_ExitProcess }, { "RaiseException", mp2_seh_RaiseException }, { "RtlUnwind", mp2_seh_RtlUnwind },
 };
 int g_mp2_nshims = sizeof g_mp2_shims / sizeof g_mp2_shims[0];

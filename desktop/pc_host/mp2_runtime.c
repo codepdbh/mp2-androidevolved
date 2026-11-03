@@ -80,7 +80,60 @@ void recomp_unresolved(const char* kind, uint32_t va, uint32_t from) {
 
 static uint32_t g_host_lo, g_host_hi;
 
+/* Cada función invitada es una función C del host: la pila nativa es el rastro real. */
+static void dump_host_stack(const CONTEXT* context) {
+    const uint32_t* sp = (const uint32_t*)(uintptr_t)context->Esp;
+    fprintf(stderr, "[MP2:STACK] pila nativa, funciones invitadas:\n");
+    int shown = 0;
+    for (int i = 0; i < 4096 && shown < 32 && readable((uint32_t)(uintptr_t)(sp + i), 4); i++) {
+        uint32_t word = sp[i], best_func = 0, best_va = 0;
+        if (word < g_host_lo || word >= g_host_hi) continue;
+        for (uint32_t k = 0; k < recomp_dispatch_count; k++) {
+            uint32_t f = (uint32_t)(uintptr_t)recomp_dispatch_table[k].func;
+            if (f <= word && f > best_func) { best_func = f; best_va = recomp_dispatch_table[k].address; }
+        }
+        if (best_func && word - best_func < 0x40000) {
+            const char* owner = module_of(best_va);
+            fprintf(stderr, "[MP2:STACK]   sub_%08X +0x%X %s\n", best_va, word - best_func, owner ? owner : "");
+            shown++;
+        }
+    }
+}
+
+/* Punto de vigilancia por hardware, para cazar quién pisa un dato invitado: se pone con
+ * mp2_watch_write, por ejemplo en la entrada de una función. Se informa cuando lo escrito
+ * tiene el aspecto indicado (mask, value). */
+#define MP2_WATCH_CODE 0xE0000DB6u
+static uint32_t g_watch_address, g_watch_mask, g_watch_value;
+static DWORD g_watch_thread;
+
+void mp2_watch_write(uint32_t address, uint32_t mask, uint32_t value) {
+    g_watch_address = address;
+    g_watch_mask = mask;
+    g_watch_value = value;
+    g_watch_thread = GetCurrentThreadId();
+    RaiseException(MP2_WATCH_CODE, 0, 0, NULL);
+}
+
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS* ep) {
+    if (ep->ExceptionRecord->ExceptionCode == MP2_WATCH_CODE) {
+        ep->ContextRecord->Dr0 = g_watch_address;
+        ep->ContextRecord->Dr7 = 0xD0001;   /* DR0 local, escritura, 4 bytes */
+        ep->ContextRecord->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP && g_watch_address) {
+        uint32_t now = *(uint32_t*)(uintptr_t)g_watch_address;
+        if ((now & g_watch_mask) == g_watch_value) {
+            char why[200];
+            snprintf(why, sizeof why, "escritura vigilada en %08X: %08X, ESP invitado %08X", g_watch_address, now, g_esp);
+            ep->ContextRecord->Dr7 = 0;
+            dump_host_stack(ep->ContextRecord);
+            mp2_stop("WATCH", why, 8);
+        }
+        ep->ContextRecord->Dr6 = 0;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     DWORD code = ep->ExceptionRecord->ExceptionCode;
     uint32_t pc = (uint32_t)(uintptr_t)ep->ExceptionRecord->ExceptionAddress;
     int fatal = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION ||
@@ -95,12 +148,29 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS* ep) {
                      (unsigned long)ep->ExceptionRecord->ExceptionInformation[1], pc);
         else
             snprintf(why, sizeof why, "excepción %08lX en host EIP %08X", code, pc);
+        dump_host_stack(ep->ContextRecord);
         mp2_stop("CRASH", why, 6);
     }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Lo que nadie maneja, también dentro de una DLL nativa: módulo, dirección y estado. */
+static LONG WINAPI unhandled_filter(EXCEPTION_POINTERS* ep) {
+    uint32_t pc = (uint32_t)(uintptr_t)ep->ExceptionRecord->ExceptionAddress;
+    HMODULE module = NULL;
+    char file[MAX_PATH] = "?", why[512];
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (const char*)(uintptr_t)pc, &module))
+        GetModuleFileNameA(module, file, sizeof file);
+    snprintf(why, sizeof why, "excepción %08lX sin manejar en %08X (%s +0x%X), datos %08lX %08lX", ep->ExceptionRecord->ExceptionCode, pc, file,
+             module ? pc - (uint32_t)(uintptr_t)module : 0, (unsigned long)ep->ExceptionRecord->ExceptionInformation[0],
+             (unsigned long)ep->ExceptionRecord->ExceptionInformation[1]);
+    dump_host_stack(ep->ContextRecord);
+    mp2_stop("CRASH", why, 7);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void mp2_install_crash_handler(void) {
+    SetUnhandledExceptionFilter(unhandled_filter);
     HMODULE self = GetModuleHandleA(NULL);
     IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((BYTE*)self + ((IMAGE_DOS_HEADER*)self)->e_lfanew);
     g_host_lo = (uint32_t)(uintptr_t)self;

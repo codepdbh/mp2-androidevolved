@@ -33,6 +33,7 @@ char g_mp2_game_root[MAX_PATH];
 char g_mp2_guest_dir[MAX_PATH];
 char g_mp2_sandbox[MAX_PATH];
 int g_mp2_allow_window;
+int g_mp2_widescreen;
 char g_mp2_cmdline[1024];
 wchar_t g_mp2_cmdline_w[1024];
 const int g_mp2_module_count = sizeof g_mp2_modules / sizeof g_mp2_modules[0];
@@ -181,6 +182,7 @@ int main(int argc, char** argv) {
     int audio = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--allow-window")) g_mp2_allow_window = 1;
+        else if (!strcmp(argv[i], "--widescreen")) g_mp2_widescreen = 1;
         else if (!strcmp(argv[i], "--audio")) audio = 1;
         else if (!strcmp(argv[i], "--game-args") && i + 1 < argc) game_args = argv[++i];
         else if (!strcmp(argv[i], "--registry") && i + 1 < argc) { GetFullPathNameA(argv[++i], MAX_PATH, registry_path, NULL); registry = registry_path; }
@@ -216,6 +218,7 @@ int main(int argc, char** argv) {
     if (!audio) waveOutSetVolume((HWAVEOUT)0, 0);
 
     native32_init();
+    native32_tls_array = (uint32_t)(uintptr_t)calloc(16, 4);
     mp2_install_crash_handler();
     mp2_registry_init(registry ? registry : "");
     mp2_d3d8_trace_init();
@@ -227,6 +230,9 @@ int main(int argc, char** argv) {
 
     /* El lifter no modela 3DNow!: el código con despacho por CPU debe ir por SSE/x87. */
     g_cpuid_edx_ext &= ~0xC0000000u;
+    /* Ni SSE3 ni posteriores, como en Android: el CRT moderno del plugin elige sus
+     * rutas por CPUID, y el lifter llega hasta SSE2. */
+    g_cpuid_ecx1 = 0;
 
     CreateThread(NULL, 0, watchdog, NULL, 0, NULL);
     HANDLE th = CreateThread(NULL, GAME_THREAD_STACK, game_thread, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);

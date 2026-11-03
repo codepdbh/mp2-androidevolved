@@ -1,13 +1,31 @@
 diff --git a/runtime/native32/native32.c b/runtime/native32/native32.c
-index 6cae03d..b2cecd0 100644
+index 6cae03d..1b1d0e1 100644
 --- a/runtime/native32/native32.c
 +++ b/runtime/native32/native32.c
-@@ -398,6 +398,14 @@ recomp_func_t recomp_lookup_import(uint32_t va) {
+@@ -120,6 +120,9 @@ static DWORD g_mach_tls = TLS_OUT_OF_INDEXES;
+ 
+ #define GUEST_STACK (4u << 20)
+ 
++/* TEB+0x2C de todos los hilos invitados: la tabla de TLS estático del host. */
++uint32_t native32_tls_array;
++
+ /* A guest thread's TIB. Lifted code reads fs:[n] as MEM32(g_fs_base + n); the
+  * real TEB stays the host's, so a guest SEH frame never lands on a chain
+  * Windows walks. The PEB is the real one: code that reads fs:[30h] wants it. */
+@@ -130,6 +133,7 @@ static uint32_t make_tib(uint32_t lo, uint32_t hi) {
+     t[2] = lo;                                   /* StackLimit                  */
+     t[0x18 / 4] = (uint32_t)(uintptr_t)t;        /* Self                        */
+     t[0x24 / 4] = GetCurrentThreadId();
++    t[0x2C / 4] = native32_tls_array;
+     t[0x30 / 4] = __readfsdword(0x30);
+     return (uint32_t)(uintptr_t)t;
+ }
+@@ -398,6 +402,14 @@ recomp_func_t recomp_lookup_import(uint32_t va) {
      return native_bridge;
  }
  
 +/* El VA de un shim por nombre: lo que un host debe devolver en GetProcAddress para
-+ * que una funci?n obtenida en ejecuci?n no se salte el shim. */
++ * que una función obtenida en ejecución no se salte el shim. */
 +uint32_t native32_shim_va(const char* name) {
 +    for (int i = 0; i < g_nshims; i++)
 +        if (!strcmp(g_shims[i].name, name)) return g_shims[i].va;
@@ -18,10 +36,10 @@ index 6cae03d..b2cecd0 100644
   *
   * CreateThread: the thread runs LIFTED code on its native stack, and a lifted
 diff --git a/runtime/native32/native32.h b/runtime/native32/native32.h
-index 39ec227..cf8fcba 100644
+index 39ec227..25dc27a 100644
 --- a/runtime/native32/native32.h
 +++ b/runtime/native32/native32.h
-@@ -58,6 +58,10 @@ int native32_bind(uint32_t base, native32_shim_t* shims, int nshims);
+@@ -58,6 +58,14 @@ int native32_bind(uint32_t base, native32_shim_t* shims, int nshims);
  uint32_t native32_module(const char* name);
  uint32_t native32_export(uint32_t base, const char* name);
  
@@ -29,14 +47,18 @@ index 39ec227..cf8fcba 100644
 + * at run time must not bypass its shim. */
 +uint32_t native32_shim_va(const char* name);
 +
++/* Guest VA of the static TLS array every guest TEB points to at +0x2C. Set it
++ * before the first guest call. */
++extern uint32_t native32_tls_array;
++
  /* Run lifted code at va to completion on this thread's guest stack. */
  void native32_call_guest(uint32_t va, int nargs, const uint32_t* args);
  
 diff --git a/runtime/recomp32/recomp_types.h b/runtime/recomp32/recomp_types.h
-index 5286bd3..3fbaedd 100644
+index 5286bd3..820f7a3 100644
 --- a/runtime/recomp32/recomp_types.h
 +++ b/runtime/recomp32/recomp_types.h
-@@ -120,14 +120,38 @@ extern const uint32_t recomp_dispatch_count;
+@@ -120,14 +120,42 @@ extern const uint32_t recomp_dispatch_count;
  #define esi l_esi
  #define edi l_edi
  #define ebp l_ebp
@@ -57,25 +79,29 @@ index 5286bd3..3fbaedd 100644
  #define RECOMP_REGS_IN() ((void)0)
  #endif
 +
-+/* RECOMP_SEH_FRAMES: una llamada recompilada es una llamada C, as? que tras una
-+ * excepci?n C++ la continuaci?n del catch corre encima de los marcos C que el
-+ * throw dej? debajo. Cuando esa funci?n retorna, la pila invitada ya est? por
-+ * encima de la entrada de esos marcos: est?n muertos y solo les queda retornar,
++/* RECOMP_SEH_FRAMES: una llamada recompilada es una llamada C, así que tras una
++ * excepción C++ la continuación del catch corre encima de los marcos C que el
++ * throw dejó debajo. Cuando esa función retorna, la pila invitada ya está por
++ * encima de la entrada de esos marcos: están muertos y solo les queda retornar,
 + * hasta llegar al llamador real, cuya pila vuelve a cuadrar. */
 +#ifdef RECOMP_SEH_FRAMES
 +#define RECOMP_SEH_CHECK() do { if ((uint32_t)esp > _seh_entry_esp) { RECOMP_RETURN(); } } while (0)
 +/* El cuerpo de un __except entra con la pila profunda y empieza con
 + * mov esp, [ebp-18h]: sube la pila por encima de su propia entrada sin estar
-+ * muerto. Es una continuaci?n: desde ah? no se le aplica la comprobaci?n. */
++ * muerto. Es una continuación: desde ahí no se le aplica la comprobación. */
 +#define RECOMP_SEH_ESP_MOVED() do { if ((uint32_t)esp > _seh_entry_esp) _seh_entry_esp = 0xFFFFFFFFu; } while (0)
++/* Entrada a mitad de función: el regreso de un gancho de plugin. Su esp es el de dentro del
++ * marco, y el epílogo lo sube por encima sin que el marco esté muerto. */
++#define RECOMP_SEH_CONTINUATION() (_seh_entry_esp = 0xFFFFFFFFu)
 +#else
 +#define RECOMP_SEH_CHECK() ((void)0)
 +#define RECOMP_SEH_ESP_MOVED() ((void)0)
++#define RECOMP_SEH_CONTINUATION() ((void)0)
 +#endif
  /* The one way out of a lifted function body: the registers go back to the
   * globals first when they are locals. */
  #define RECOMP_RETURN() do { RECOMP_REGS_OUT(); return; } while (0)
-@@ -1075,6 +1099,7 @@ void recomp_unresolved(const char *kind, uint32_t va, uint32_t from);
+@@ -1075,6 +1103,7 @@ void recomp_unresolved(const char *kind, uint32_t va, uint32_t from);
      func(); \
      RECOMP_REGS_IN(); \
      g_cur_func = _caller;  /* the callee RECOMP_ENTER clobbered it */ \
@@ -83,7 +109,7 @@ index 5286bd3..3fbaedd 100644
  } while(0)
  
  /* Indirect call through dispatch */
-@@ -1095,6 +1120,7 @@ void recomp_unresolved(const char *kind, uint32_t va, uint32_t from);
+@@ -1095,6 +1124,7 @@ void recomp_unresolved(const char *kind, uint32_t va, uint32_t from);
          _fn(); \
          RECOMP_REGS_IN(); \
          g_cur_func = _caller;  /* the callee RECOMP_ENTER clobbered it */ \

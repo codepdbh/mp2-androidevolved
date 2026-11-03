@@ -1,0 +1,264 @@
+std::string guestWorkingDirectory="C:\\mp2";
+void logicalDrives(){ret(4,0);}
+void driveType(){auto path=lower(guestString(arg(0)));ret(path.empty()||path.rfind("c:",0)==0?3:1,1);}
+uint32_t fileError(){switch(errno){case ENOENT:return 2;case EACCES:case EPERM:return 5;case EEXIST:return 80;case ENOSPC:return 112;case EBADF:return 6;default:return 1;}}
+// Movies are named <scene>_<language>_<region>.vp6 and the game opens the one
+// for its language only, skipping the scene (voices included) when it is
+// missing. Copies of the game hold each scene in one or two languages, often
+// mixed (35 Spanish and 12 English on one tested copy), so a missing language
+// falls back to the same scene in another one: English first, then any.
+std::filesystem::path movieInOtherLanguage(const std::filesystem::path& missing){
+    static const std::regex name("(.+)_([a-z]+)_(pal|ntsc)\\.vp6");
+    std::smatch wanted;auto file=lower(missing.filename().string());
+    if(!std::regex_match(file,wanted,name))return missing;
+    std::filesystem::path chosen;std::error_code error;
+    for(auto& entry:std::filesystem::directory_iterator(missing.parent_path(),error)){
+        std::smatch other;auto candidate=lower(entry.path().filename().string());
+        if(!std::regex_match(candidate,other,name)||other[1]!=wanted[1])continue;
+        if(chosen.empty()||other[2]=="english")chosen=entry.path();
+        if(other[2]=="english")break;
+    }
+    if(chosen.empty())return missing;
+    static unsigned logged=0;if(++logged<=32)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Movie %s missing: playing %s",file.c_str(),chosen.filename().string().c_str());
+    return chosen;
+}
+// Listado por directorio (nombre en minúsculas -> nombre real). El motor busca cada
+// entrada de su base de datos como archivo suelto antes de ir al .ras: decenas de miles de
+// rutas que no existen, y cada consulta cuesta unos 10 ms en el almacenamiento compartido.
+std::unordered_map<std::string,std::unordered_map<std::string,std::string>> gameDirectories;
+const std::unordered_map<std::string,std::string>& gameDirectoryListing(const std::string& directory){
+    auto found=gameDirectories.find(directory);if(found!=gameDirectories.end())return found->second;
+    auto& listing=gameDirectories[directory];std::error_code error;
+    for(auto& entry:std::filesystem::directory_iterator(directory,error)){auto name=entry.path().filename().string();listing[lower(name)]=name;}
+    return listing;
+}
+void forgetGameDirectories(){gameDirectories.clear();}
+bool gameFileListed(const std::filesystem::path& path){
+    auto& listing=gameDirectoryListing(path.parent_path().string());
+    return listing.count(lower(path.filename().string()))!=0;
+}
+std::filesystem::path gamePath(std::string guest){
+    std::replace(guest.begin(),guest.end(),'\\','/');auto normalized=lower(guest);
+    if(normalized=="c:/mp2")guest.clear();
+    else if(normalized.rfind("c:/mp2/",0)==0)guest=guest.substr(sizeof "c:/mp2/"-1);
+    else if(guest.find(':')!=std::string::npos||guest.rfind("//",0)==0){
+        // Outside the game folder (Carbon probes C:\bin.dat): a sandbox under
+        // nfsc/_outside, so a read finds nothing, as on a PC without the file.
+        std::string flat;for(char c:guest)flat+=(c==':'||c=='/')?'_':c;
+        static unsigned logged=0;if(++logged<=8)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Guest path outside the game folder: %s -> _outside/%s",guest.c_str(),flat.c_str());
+        return std::filesystem::path(hostGameRoot)/"_outside"/flat;
+    }
+    else {if(!guest.empty()&&guest.front()=='/')guest.erase(0,1);else{auto current=guestWorkingDirectory.substr(std::min(guestWorkingDirectory.size(),sizeof "C:\\mp2"));std::replace(current.begin(),current.end(),'\\','/');if(!current.empty())guest=current+"/"+guest;}}
+    auto relative=std::filesystem::path(guest).lexically_normal();for(const auto& part:relative)if(part=="..")throw GuestStop("Guest path leaves nfsc: "+guest);
+    auto result=std::filesystem::path(hostGameRoot);
+    for(const auto& part:relative){if(part==".")continue;bool found=false;
+        auto& listing=gameDirectoryListing(result.string());
+        if(auto name=listing.find(lower(part.string()));name!=listing.end()){result/=name->second;found=true;}
+        if(!found)result/=part;
+    }
+    return result;  // ".." ya se rechazó arriba; la carpeta del juego no tiene enlaces.
+}
+std::map<uint32_t,int> fileHandles;uint32_t nextFileHandle=0xf0060000;
+// The game skips its CD-drive check when the game folder holds a file named
+// "foobar" (its developer switch, 0x0057CAC0("foobar")). Copies made without
+// it showed the insert-disc MessageBoxA. Present it as an empty file when absent.
+bool discCheckSwitch(const std::filesystem::path& path){
+    std::error_code error;
+    return lower(path.filename().string())=="foobar"&&!std::filesystem::exists(path,error)&&
+        std::filesystem::weakly_canonical(path.parent_path())==std::filesystem::path(hostGameRoot);
+}
+// Los .ras se reabren una vez por entrada: se conserva el descriptor.
+std::map<uint32_t,std::string> pooledFileHandles;
+std::map<std::string,std::vector<int>> idleArchives;
+int openIdleArchive(const std::string& path){
+    auto idle=idleArchives.find(path);if(idle==idleArchives.end()||idle->second.empty())return -1;
+    int descriptor=idle->second.back();idle->second.pop_back();::lseek(descriptor,0,SEEK_SET);return descriptor;
+}
+bool closeGuestFile(uint32_t handle){
+    auto file=fileHandles.find(handle);if(file==fileHandles.end())return false;
+    auto pooled=pooledFileHandles.find(handle);
+    if(pooled!=pooledFileHandles.end()){
+        auto& idle=idleArchives[pooled->second];
+        if(idle.size()<8)idle.push_back(file->second);else ::close(file->second);
+        pooledFileHandles.erase(pooled);
+    }else ::close(file->second);
+    fileHandles.erase(file);return true;
+}
+// Guest console text, line by line, to logcat (tag NFSC-guest).
+void guestConsole(const std::string& text){
+    static std::string pending;pending+=text;
+    for(size_t end;(end=pending.find(char(10)))!=std::string::npos;pending.erase(0,end+1)){
+        auto line=pending.substr(0,end);if(!line.empty()&&line.back()==char(13))line.pop_back();
+        __android_log_print(ANDROID_LOG_INFO,"NFSC-guest","%s",line.c_str());
+    }
+    if(pending.size()>4096){__android_log_print(ANDROID_LOG_INFO,"NFSC-guest","%s",pending.c_str());pending.clear();}
+}
+void fileType(){
+    uint32_t handle=arg(0);
+    if(handle>=0xf0000200u&&handle<=0xf0000208u){ret(2,1);return;}
+    if(fileHandles.find(handle)!=fileHandles.end()){ret(1,1);return;}
+    lastError=6;ret(0,1);
+}
+void longPath(){
+    auto path=gamePath(guestString(arg(0)));std::error_code error;if(!std::filesystem::exists(path,error)){lastError=2;ret(0,3);return;}
+    auto relative=path.lexically_relative(std::filesystem::path(hostGameRoot)).string();
+    std::string result="C:\\mp2";if(relative!="."&&!relative.empty())result+="\\"+relative;std::replace(result.begin(),result.end(),'/','\\');
+    if(arg(2)<=result.size()){ret(result.size()+1,3);return;}std::memcpy(ptr(arg(1),result.size()+1),result.c_str(),result.size()+1);ret(result.size(),3);
+}
+void createFile(){
+    auto path=gamePath(guestString(arg(0)));uint32_t access=arg(1),disposition=arg(4),flags=arg(5);
+    if(flags&0x40000000u)throw GuestStop("Overlapped CreateFile requires asynchronous file service");
+    int options=access&0x40000000u?(access&0x80000000u?O_RDWR:O_WRONLY):O_RDONLY;
+    switch(disposition){case 1:options|=O_CREAT|O_EXCL;break;case 2:options|=O_CREAT|O_TRUNC;break;case 3:break;case 4:options|=O_CREAT;break;case 5:options|=O_TRUNC;break;default:lastError=87;ret(UINT32_MAX,7);return;}
+    bool readOnly=disposition==3&&!(access&0x40000000u);
+    if(readOnly&&!gameFileListed(path)){lastError=2;ret(UINT32_MAX,7);return;}  // Sin tocar el disco: el caso común.
+    bool existed=disposition==3||gameFileListed(path);
+    auto text=path.string();bool archive=readOnly&&path.extension()==".ras";
+    int descriptor=archive?openIdleArchive(text):-1;
+    if(descriptor<0)descriptor=::open(text.c_str(),options|O_CLOEXEC,0600);
+    if(descriptor<0){lastError=fileError();NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSC","Guest file open failed: %s, error=%u",text.c_str(),lastError);ret(UINT32_MAX,7);return;}
+    static unsigned logged=0;if(++logged<=48)NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Guest file %s access=%x disposition=%u",path.filename().string().c_str(),access,disposition);
+    if(!existed)forgetGameDirectories();
+    uint32_t handle=nextFileHandle++;fileHandles.emplace(handle,descriptor);
+    if(archive)pooledFileHandles[handle]=text;
+    lastError=(disposition==2||disposition==4)&&existed?183:0;ret(handle,7);
+}
+void readFile(){
+    auto file=fileHandles.find(arg(0));if(file==fileHandles.end()){lastError=6;ret(0,5);return;}if(arg(4))throw GuestStop("Overlapped ReadFile pending");
+    if(arg(3))write32(arg(3),0);ssize_t count;do{count=::read(file->second,ptr(arg(1),arg(2)),arg(2));}while(count<0&&errno==EINTR);
+    if(count<0){lastError=fileError();ret(0,5);return;}if(arg(3))write32(arg(3),count);ret(1,5);
+}
+void writeFile(){
+    if(arg(4))throw GuestStop("Overlapped WriteFile pending");
+    if(!arg(3)||!memory->writable(arg(3),4)){lastError=87;ret(0,5);return;}write32(arg(3),0);
+    // Standard output/error (NFSCO's logging.dll writes its log there): to logcat.
+    if(arg(0)>=0xf0000200u&&arg(0)<=0xf0000208u&&memory->readable(arg(1),arg(2))){
+        guestConsole(std::string(static_cast<const char*>(ptr(arg(1),arg(2))),arg(2)));write32(arg(3),arg(2));ret(1,5);return;}
+    auto file=fileHandles.find(arg(0));if(file==fileHandles.end()){lastError=6;ret(0,5);return;}
+    if(!memory->readable(arg(1),arg(2))){lastError=1784;ret(0,5);return;}
+    ssize_t count;do{count=::write(file->second,ptr(arg(1),arg(2)),arg(2));}while(count<0&&errno==EINTR);
+    if(count<0){lastError=fileError();ret(0,5);return;}write32(arg(3),uint32_t(count));ret(1,5);
+}
+void flushFileBuffers(){auto file=fileHandles.find(arg(0));if(file==fileHandles.end()){lastError=6;ret(0,1);return;}
+    int result;do{result=::fsync(file->second);}while(result&&errno==EINTR);if(result){lastError=fileError();ret(0,1);return;}ret(1,1);
+}
+void setEndOfFile(){auto file=fileHandles.find(arg(0));if(file==fileHandles.end()){lastError=6;ret(0,1);return;}
+    auto position=::lseek(file->second,0,SEEK_CUR);if(position<0||::ftruncate(file->second,position)){lastError=fileError();ret(0,1);return;}ret(1,1);
+}
+void fileSize(){auto file=fileHandles.find(arg(0));struct stat status{};if(file==fileHandles.end()){lastError=6;ret(UINT32_MAX,2);return;}if(fstat(file->second,&status)){lastError=fileError();ret(UINT32_MAX,2);return;}uint64_t size=status.st_size;if(arg(1))write32(arg(1),size>>32);lastError=0;ret(size,2);}
+void fileAttributes(){auto path=gamePath(guestString(arg(0)));struct stat status{};if(path!=std::filesystem::path(hostGameRoot)&&!gameFileListed(path)){lastError=2;ret(UINT32_MAX,1);return;}if(stat(path.c_str(),&status)){lastError=fileError();ret(UINT32_MAX,1);return;}ret(S_ISDIR(status.st_mode)?0x10:0x20,1);}
+void setFilePointer(){
+    auto file=fileHandles.find(arg(0));if(file==fileHandles.end()){lastError=6;ret(UINT32_MAX,4);return;}
+    uint32_t method=arg(3),high=arg(2);if(method>2){lastError=87;ret(UINT32_MAX,4);return;}
+    int64_t distance=int32_t(arg(1));if(high){uint64_t bits=(uint64_t(read32(high))<<32)|arg(1);std::memcpy(&distance,&bits,8);}
+    off_t result=::lseek(file->second,off_t(distance),method==0?SEEK_SET:method==1?SEEK_CUR:SEEK_END);
+    if(result<0){lastError=errno==EINVAL?131:fileError();ret(UINT32_MAX,4);return;}
+    if(!high&&uint64_t(result)>UINT32_MAX){lastError=87;ret(UINT32_MAX,4);return;}
+    if(high)write32(high,uint64_t(result)>>32);lastError=0;ret(uint32_t(result),4);
+}
+// Keep Windows profile folders alongside the user's game data on Android.
+void shellFolderPath(){
+    uint32_t folder=arg(1),out=arg(4);if(!out||!memory->writable(out,260)){ret(0x80070057u,5);return;}
+    *static_cast<char*>(ptr(out,1))=0;
+    if(arg(2)||arg(3)>1||(folder&~0xc0ffu)){ret(0x80070057u,5);return;}
+    std::string suffix;switch(folder&0xff){case 0x1c:suffix="AppData\\Local";break;case 0x1a:suffix="AppData\\Roaming";break;case 5:suffix="Documents";break;default:ret(0x80070057u,5);return;}
+    std::string logical="C:\\mp2\\"+suffix;auto path=gamePath(logical);std::error_code error;
+    if(folder&0x8000)std::filesystem::create_directories(path,error);
+    if(error){ret(0x80070005u,5);return;}
+    if(!(folder&0x4000)&&!std::filesystem::is_directory(path,error)){ret(0x80070003u,5);return;}
+    std::memcpy(ptr(out,logical.size()+1),logical.c_str(),logical.size()+1);
+    NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Guest profile folder %s",logical.c_str());ret(0,5);
+}
+struct GuestFileSearch {std::vector<std::filesystem::path> paths;size_t next=0;};
+std::map<uint32_t,GuestFileSearch> fileSearches;uint32_t nextSearchHandle=0xf0070000;
+bool filePatternMatches(std::string pattern,std::string name){
+    pattern=lower(pattern);name=lower(name);if(pattern=="*.*")pattern="*";
+    size_t p=0,n=0,star=std::string::npos,retry=0;
+    while(n<name.size()){
+        if(p<pattern.size()&&(pattern[p]=='?'||pattern[p]==name[n])){++p;++n;}
+        else if(p<pattern.size()&&pattern[p]=='*'){star=p++;retry=n;}
+        else if(star!=std::string::npos){p=star+1;n=++retry;}else return false;
+    }while(p<pattern.size()&&pattern[p]=='*')++p;return p==pattern.size();
+}
+bool writeFindData(uint32_t out,const std::filesystem::path& path){
+    if(!out||!memory->writable(out,320)){lastError=87;return false;}
+    struct stat status{};if(::stat(path.c_str(),&status)){lastError=fileError();return false;}
+    auto name=path.filename().string();if(name.size()>=260){lastError=206;return false;}
+    std::memset(ptr(out,320),0,320);write32(out,S_ISDIR(status.st_mode)?0x10:0x20);
+    auto time=[&](uint32_t offset,int64_t seconds){uint64_t ticks=(seconds+11644473600ll)*10000000ull;std::memcpy(ptr(out+offset,8),&ticks,8);};
+    time(4,status.st_ctime);time(12,status.st_atime);time(20,status.st_mtime);
+    uint64_t size=S_ISDIR(status.st_mode)?0:uint64_t(status.st_size);write32(out+28,size>>32);write32(out+32,uint32_t(size));
+    std::memcpy(ptr(out+44,name.size()+1),name.c_str(),name.size()+1);return true;
+}
+void findFirstFile(){
+    auto requested=guestString(arg(0));std::replace(requested.begin(),requested.end(),'\\','/');
+    if(requested.empty()||requested.back()=='/'){lastError=123;ret(UINT32_MAX,2);return;}
+    auto separator=requested.find_last_of('/');auto pattern=requested.substr(separator==std::string::npos?0:separator+1);
+    auto directory=gamePath(separator==std::string::npos?".":requested.substr(0,separator));
+    std::error_code error;GuestFileSearch search;
+    if(std::filesystem::is_directory(directory,error))for(const char* dot:{".",".."})if(filePatternMatches(pattern,dot))search.paths.push_back(directory/dot);
+    for(auto& entry:std::filesystem::directory_iterator(directory,error)){
+        if(!filePatternMatches(pattern,entry.path().filename().string()))continue;
+        // Apply the same containment check used for ordinary file opens.
+        auto logical="C:/mp2/"+entry.path().lexically_relative(std::filesystem::path(hostGameRoot)).string();
+        gamePath(logical);search.paths.push_back(entry.path());
+    }
+    if(error){lastError=error==std::errc::no_such_file_or_directory?3:5;ret(UINT32_MAX,2);return;}
+    if(search.paths.empty()){lastError=2;ret(UINT32_MAX,2);return;}
+    std::sort(search.paths.begin(),search.paths.end());
+    if(!writeFindData(arg(1),search.paths.front())){ret(UINT32_MAX,2);return;}
+    search.next=1;uint32_t handle=nextSearchHandle++;fileSearches.emplace(handle,std::move(search));ret(handle,2);
+}
+void findNextFile(){auto found=fileSearches.find(arg(0));if(found==fileSearches.end()){lastError=6;ret(0,2);return;}
+    auto& search=found->second;if(search.next==search.paths.size()){lastError=18;ret(0,2);return;}
+    if(!writeFindData(arg(1),search.paths[search.next])){ret(0,2);return;}++search.next;ret(1,2);
+}
+void findClose(){if(!fileSearches.erase(arg(0))){lastError=6;ret(0,1);return;}ret(1,1);}
+void createDirectory(){forgetGameDirectories();if(arg(1))throw GuestStop("CreateDirectory security attributes pending");auto path=gamePath(guestString(arg(0)));
+    if(::mkdir(path.c_str(),0700)){lastError=errno==EEXIST?183:fileError();ret(0,2);return;}ret(1,2);
+}
+void fullPathName(){
+    auto requested=guestString(arg(0));if(requested.empty()){lastError=123;ret(0,4);return;}
+    auto path=gamePath(requested);auto relative=path.lexically_relative(std::filesystem::path(hostGameRoot)).string();
+    std::string logical="C:\\mp2";if(relative!="."&&!relative.empty())logical+="\\"+relative;
+    std::replace(logical.begin(),logical.end(),'/','\\');if(requested.back()=='/'||requested.back()=='\\')logical+='\\';
+    uint32_t capacity=arg(1),out=arg(2),part=arg(3);if(capacity<=logical.size()){ret(uint32_t(logical.size()+1),4);return;}
+    if(!out||!memory->writable(out,logical.size()+1)||(part&&!memory->writable(part,4))){lastError=87;ret(0,4);return;}
+    std::memcpy(ptr(out,logical.size()+1),logical.c_str(),logical.size()+1);
+    if(part)write32(part,logical.back()=='\\'?0:out+uint32_t(logical.find_last_of('\\')+1));ret(uint32_t(logical.size()),4);
+}
+// DeleteFileA / MoveFileA inside the game folder (gamePath refuses anything outside it).
+void deleteFile(){forgetGameDirectories();
+    auto path=gamePath(guestString(arg(0)));
+    if(::unlink(path.c_str())){lastError=fileError();ret(0,1);return;}
+    lastError=0;ret(1,1);
+}
+void removeDirectory(){forgetGameDirectories();
+    auto path=gamePath(guestString(arg(0)));
+    if(::rmdir(path.c_str())){lastError=errno==ENOTEMPTY||errno==EEXIST?145:fileError();ret(0,1);return;}  // ERROR_DIR_NOT_EMPTY
+    lastError=0;ret(1,1);
+}
+void moveFile(){forgetGameDirectories();
+    auto from=gamePath(guestString(arg(0))),to=gamePath(guestString(arg(1)));
+    struct stat status{};if(!::stat(to.c_str(),&status)){lastError=183;ret(0,2);return;}  // ERROR_ALREADY_EXISTS
+    if(::rename(from.c_str(),to.c_str())){lastError=fileError();ret(0,2);return;}
+    lastError=0;ret(1,2);
+}
+// GetFileTime(handle, creation, access, write): FILETIME is 100 ns ticks since 1601.
+void fileTime(){
+    auto file=fileHandles.find(arg(0));struct stat status{};
+    if(file==fileHandles.end()){lastError=6;ret(0,4);return;}
+    if(fstat(file->second,&status)){lastError=fileError();ret(0,4);return;}
+    auto ticks=[](const timespec& time){return uint64_t(time.tv_sec)*10000000ull+uint64_t(time.tv_nsec)/100u+116444736000000000ull;};
+    uint64_t values[3]={ticks(status.st_mtim),ticks(status.st_atim),ticks(status.st_mtim)};  // no creation time: use the last write
+    for(unsigned i=0;i<3;++i)if(arg(1+i))std::memcpy(ptr(arg(1+i),8),&values[i],8);
+    lastError=0;ret(1,4);
+}
+const std::map<std::string,recomp_func_t> fileFunctions={
+    {"GetFileTime",fileTime},{"DeleteFileA",deleteFile},{"RemoveDirectoryA",removeDirectory},{"MoveFileA",moveFile},
+    {"GetFullPathNameA",fullPathName},{"WriteFile",writeFile},{"FlushFileBuffers",flushFileBuffers},{"SetEndOfFile",setEndOfFile},
+    {"FindFirstFileA",findFirstFile},{"FindNextFileA",findNextFile},{"FindClose",findClose},{"CreateDirectoryA",createDirectory},
+    {"SetFilePointer",setFilePointer},
+    {"GetLogicalDrives",logicalDrives},{"GetDriveTypeA",driveType},
+    {"GetLongPathNameA",longPath},{"CreateFileA",createFile},{"ReadFile",readFile},{"GetFileSize",fileSize},{"GetFileAttributesA",fileAttributes}
+};

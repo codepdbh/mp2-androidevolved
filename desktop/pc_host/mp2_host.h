@@ -17,6 +17,7 @@ extern native32_shim_t g_mp2_shims[];
 extern int g_mp2_nshims;
 
 void mp2_install_crash_handler(void);
+void mp2_watch_write(uint32_t address, uint32_t mask, uint32_t value);
 /* Vuelca el estado invitado y termina el proceso con `code`. */
 void mp2_stop(const char* kind, const char* detail, int code);
 
@@ -42,11 +43,14 @@ void mp2_input_script_load(const char* path);
 void mp2_measure_init(void);
 void mp2_measure_call(uint32_t target);
 void mp2_measure_write(void);
+void mp2_measure_restore_skipped(void);
 
 /* Política de escritorio. */
 #define MP2_WINDOW_W 960
 #define MP2_WINDOW_H 540
 extern int g_mp2_allow_window;
+extern int g_mp2_widescreen;
+void mp2_load_widescreen(void);
 extern char g_mp2_cmdline[];
 extern wchar_t g_mp2_cmdline_w[];
 

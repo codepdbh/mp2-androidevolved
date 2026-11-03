@@ -242,3 +242,18 @@ la jugabilidad. No hay FPS del juego que informar.
 Instalar Ghidra compatible con la extensión fijada, analizar la ruta desde entry,
 exportar límites fiables TOML/CSV y regenerar un subconjunto de inicio. Corregir
 GP/BSS y servicios requeridos por evidencia antes de llamar al entry point completo.
+
+## Estado del port de PC a Android (2026-11-03)
+
+Runtime Android con los 25 módulos recompilados en ARM64, DXVK sobre Vulkan y datos del
+usuario en `Memoria interna/mp2` (nunca dentro de la APK).
+
+- EJECUTA en Galaxy S25 (Adreno 830, 2340x1080): vídeo Bink de inicio, carga, menú en
+  español y primer nivel con Max en pantalla, comprobados por capturas del teléfono.
+- WidescreenFix: se carga y aplica sus parches en Android. VALIDADO solo en Windows
+  (960x540, primer nivel); falta validarlo en el S25 con una prueba propia.
+- COMPILA, sin probar en el teléfono: launcher de ajustes, HUD que cambia solo entre menú
+  y juego, cursor táctil por posición exacta, CRT nativa y caché de directorios para la carga.
+- Sin confirmar: disparo, Bullet Time, Shootdodge, guardado, partida completa, mando.
+- Limitaciones conocidas: DirectSound 3D sin Doppler ni reverberación EAX; diálogos de
+  Windows no disponibles (el de inicio se evita con los ajustes del registro virtual).

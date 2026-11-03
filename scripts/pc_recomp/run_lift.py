@@ -85,6 +85,10 @@ def cmd_catalog(exe, seeds_path, out, seeds_only=False, forced=None):
     info = analyze_pe(exe)
     iat = build_iat_map(info)
     data = open(exe, "rb").read()
+    # Un jmp en línea de un plugin vuelve a mitad de función: necesita su entrada.
+    import pefile
+    pe_file = pefile.PE(data=data, fast_load=True)
+    continuations = patch_continuations(bytes(pe_file.get_memory_mapped_image()), info.image_base)
     seeds = {info.image_base + info.entry_point_rva}
     for e in json.load(open(seeds_path)):
         a = e.get("address") if isinstance(e, dict) else e
@@ -122,6 +126,7 @@ def cmd_catalog(exe, seeds_path, out, seeds_only=False, forced=None):
     # These roots are backed by actual strict-dispatch failures and assembly.
     forced_path = os.path.join(HERE, "..", "..", "config", "pc", "forced_seeds.json")
     pending = json.load(open(forced_path)) if os.path.exists(forced_path) else []
+    pending += continuations
     if forced:
         # Extra forced roots for this run (--forced FILE: JSON array of VAs),
         # e.g. NFSCO hook continuations in the middle of game functions.
@@ -180,6 +185,74 @@ def read_va_list(path):
     return out
 
 
+def read_code_patches():
+    """Parches de código de los plugins, medidos en el host: (va, original, nuevo)."""
+    path = os.path.join(HERE, "..", "..", "config", "pc", "code_patches.txt")
+    if not os.path.exists(path):
+        return []
+    rows = []
+    for line in open(path):
+        line = line.split("#", 1)[0].split()
+        if len(line) >= 5:
+            rows.append((int(line[0], 16), bytes.fromhex(line[3]), bytes.fromhex(line[4])))
+    return rows
+
+
+def plugin_variants(img, base, fds):
+    """Los parches de un plugin como variantes de lift32: se recompila el original y, en
+    cada sitio, se compara la memoria. Si el plugin ya escribió sus bytes corre lo parcheado.
+
+    Aplicarlos a la imagen los dejaba activos desde el arranque, y el plugin los instala
+    más tarde, desde un hilo y con sus punteros ya listos: 0xF564C0 leía uno aún NULL.
+    """
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    blocks = sorted((b[0], b[1]) for fd in fds for b in fd["blocks"])
+    variants = {}
+    for va, old, new in read_code_patches():
+        if not base <= va < base + len(img):
+            continue
+        if bytes(img[va - base:va - base + len(old)]) != old:
+            raise SystemExit(f"parche {va:#x}: los bytes originales no coinciden")
+        block = next((b for b in blocks if b[0] <= va < b[1]), None)
+        if block is None:
+            print(f"[*] parche {va:#x}: fuera del código catalogado")
+            continue
+        start = end = None
+        for ins in md.disasm(bytes(img[block[0] - base:block[1] - base]), block[0]):
+            if ins.address + ins.size <= va:
+                continue
+            if start is None:
+                start = ins.address
+            end = ins.address + ins.size
+            if end >= va + len(old):
+                break
+        if start is None or start > va:
+            raise SystemExit(f"parche {va:#x}: no cae en una instrucción")
+        original = bytes(img[start - base:end - base])
+        patched = bytearray(original)
+        patched[va - start:va - start + len(new)] = new
+        variants[start] = (end, original, bytes(patched))
+        print(f"[*] variante de plugin {start:#x}..{end:#x}")
+    return variants
+
+
+def patch_continuations(img, base):
+    """Donde vuelve un jmp en línea: la instrucción original siguiente a lo que pisó.
+    El plugin regresa a mitad de función, así que necesita una entrada propia."""
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    out = set()
+    for va, old, new in read_code_patches():
+        if new[0] != 0xE9 or not base <= va < base + len(img):
+            continue
+        next_va = va
+        for ins in md.disasm(bytes(img[va - base:va - base + 32]), va):
+            next_va = ins.address + ins.size
+            if next_va >= va + 5:
+                break
+        out.add(next_va)
+    return sorted(out)
+
+
 def write_if_changed(path, text):
     if os.path.exists(path):
         with open(path, newline="") as fh:
@@ -224,10 +297,17 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix="", extra_
                     hook_sites=set(hooks), patch_sites=sites,
                     # --variants FILE: [[start, end, lifted hex, other hex], ...]: ranges a
                     # plugin rewrites and restores while the game runs (lift32 variants).
-                    variants={int(v[0]): (int(v[1]), bytes.fromhex(v[2]), bytes.fromhex(v[3]))
-                              for v in json.load(open(variants))} if variants else None)
+                    variants={**plugin_variants(img, base, fds),
+                              **({int(v[0]): (int(v[1]), bytes.fromhex(v[2]), bytes.fromhex(v[3]))
+                                  for v in json.load(open(variants))} if variants else {})})
     os.makedirs(outdir, exist_ok=True)
     written = set()
+
+    # Regresos de ganchos de plugin: los calculados y los forzados a mano.
+    forced_path = os.path.join(HERE, "..", "..", "config", "pc", "forced_seeds.json")
+    continuations = set(patch_continuations(img, base))
+    if os.path.exists(forced_path):
+        continuations |= set(json.load(open(forced_path)))
 
     stats = collections.Counter()
     unimpl = collections.Counter()
@@ -265,6 +345,11 @@ def cmd_lift(exe, catalog, outdir, split=400, names_path=None, prefix="", extra_
             else:
                 f = rebuild(md, img, base, fd)
                 code = lifter.lift_function(f)
+                if a in continuations:
+                    enter = f"RECOMP_ENTER(0x{a:08X}u);"
+                    if enter not in code:
+                        raise SystemExit(f"continuación {a:#x}: sin RECOMP_ENTER")
+                    code = code.replace(enter, enter + " RECOMP_SEH_CONTINUATION();", 1)
         except Exception as ex:  # noqa: BLE001
             failed.append((a, repr(ex)))
             code = (f"/* LIFT FAILED: {ex!r} */\n"

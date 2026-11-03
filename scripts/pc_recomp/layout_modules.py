@@ -18,12 +18,11 @@ GUEST = ["msvcr71.dll", "msvcp71.dll", "mfc71.dll", "rlmfc.dll", "grphmfc.dll", 
          "X_SharedDBMFC.dll", "X_MessageMFC.dll", "X_Inputmfc.dll", "X_PhysicalSimulationMFC.dll",
          "X_LevelMFC.dll", "X_LevelRuntimeMFC.dll", "X_AudioMFC.dll", "X_ModesMFC.dll",
          "X_BasicModesMFC.dll", "X_GameObjectsMFC.dll", "e2driver/binkw32.dll",
-         "e2driver/e2_d3d8_driver_mfc.dll"]
+         "e2driver/e2_d3d8_driver_mfc.dll", "scripts/MaxPayne2.WidescreenFix.asi"]
 EXCLUDED = {
     "BugReport.exe": "informador de errores externo; no participa en el juego",
     "SysInfo.dll": "solo la usa BugReport.exe",
     "d3d9.dll": "cargador ASI de terceros, no es parte del juego",
-    "scripts/MaxPayne2.WidescreenFix.asi": "mod de terceros; se evalúa después de un arranque limpio",
     "unins000.exe": "desinstalador",
     "DirectX/dxwebsetup.exe": "instalador de DirectX",
     "eax.dll": "sndmfc importa EAX por ordinal: pendiente de decidir puente nativo o lift",
@@ -32,7 +31,8 @@ EXCLUDED = {
 
 
 def tag(name):
-    return name.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
+    # El prefijo acaba en identificadores de C.
+    return "wsfix" if name.endswith(".asi") else name.rsplit("/", 1)[-1].rsplit(".", 1)[0].lower()
 
 
 def main(inventory, out):

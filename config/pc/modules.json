@@ -1,5 +1,5 @@
 {
- "guest_end": 16056320,
+ "guest_end": 16318464,
  "modules": [
   {
    "file": "MaxPayne2.exe",
@@ -240,13 +240,22 @@
    "size_of_image": 552960,
    "entry_rva": 350642,
    "sha256": "9d72637c51f7a17dd9d95b079e5508ecbe8f1799c34395e0876945d741ff11ae"
+  },
+  {
+   "file": "scripts/MaxPayne2.WidescreenFix.asi",
+   "tag": "wsfix",
+   "prefix": "wsfix_",
+   "guest_base": 16056320,
+   "preferred_base": 268435456,
+   "size_of_image": 245760,
+   "entry_rva": 37950,
+   "sha256": "3ba1f25bd374f104aa4833b84823113a111456e8b4d49969b300202cee6af111"
   }
  ],
  "excluded": {
   "BugReport.exe": "informador de errores externo; no participa en el juego",
   "SysInfo.dll": "solo la usa BugReport.exe",
   "d3d9.dll": "cargador ASI de terceros, no es parte del juego",
-  "scripts/MaxPayne2.WidescreenFix.asi": "mod de terceros; se evalúa después de un arranque limpio",
   "unins000.exe": "desinstalador",
   "DirectX/dxwebsetup.exe": "instalador de DirectX",
   "eax.dll": "sndmfc importa EAX por ordinal: pendiente de decidir puente nativo o lift",
