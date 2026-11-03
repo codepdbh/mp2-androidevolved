@@ -1,0 +1,1 @@
+# Valores iniciales del registro virtual: clave|nombre|tipo|bytes en hexadecimal

@@ -1,0 +1,255 @@
+{
+ "guest_end": 16056320,
+ "modules": [
+  {
+   "file": "MaxPayne2.exe",
+   "tag": "exe",
+   "prefix": "",
+   "guest_base": 4194304,
+   "preferred_base": 4194304,
+   "size_of_image": 1497680,
+   "entry_rva": 865520,
+   "sha256": "1e25cafc37174a607b58a38dfac796056f0f38f35d253b0b2d7677f9bd7bd010"
+  },
+  {
+   "file": "msvcr71.dll",
+   "tag": "msvcr71",
+   "prefix": "msvcr71_",
+   "guest_base": 6291456,
+   "preferred_base": 2083782656,
+   "size_of_image": 352256,
+   "entry_rva": 8863,
+   "sha256": "8094af5ee310714caebccaeee7769ffb08048503ba478b879edfef5f1a24fefe"
+  },
+  {
+   "file": "msvcp71.dll",
+   "tag": "msvcp71",
+   "prefix": "msvcp71_",
+   "guest_base": 6684672,
+   "preferred_base": 2084175872,
+   "size_of_image": 503808,
+   "entry_rva": 11696,
+   "sha256": "df96156f6a548fd6fe5672918de5ae4509d3c810a57bffd2a91de45a3ed5b23b"
+  },
+  {
+   "file": "mfc71.dll",
+   "tag": "mfc71",
+   "prefix": "mfc71_",
+   "guest_base": 7208960,
+   "preferred_base": 2081685504,
+   "size_of_image": 1060864,
+   "entry_rva": 62490,
+   "sha256": "4da5efdc46d126b45daeee8bc69c0ba2aa243589046b7dfd12a7e21b9bee6a32"
+  },
+  {
+   "file": "rlmfc.dll",
+   "tag": "rlmfc",
+   "prefix": "rlmfc_",
+   "guest_base": 8323072,
+   "preferred_base": 268435456,
+   "size_of_image": 397312,
+   "entry_rva": 113296,
+   "sha256": "68e4d7d99d8db08bd05d414fa224eae921a72760ed8b93e377f8c51597ea2e61"
+  },
+  {
+   "file": "grphmfc.dll",
+   "tag": "grphmfc",
+   "prefix": "grphmfc_",
+   "guest_base": 8781824,
+   "preferred_base": 268435456,
+   "size_of_image": 122880,
+   "entry_rva": 81179,
+   "sha256": "1a7c6974f66cd7633bcaa7ae799936b301acedb64549e8a0ab734d1e218e8248"
+  },
+  {
+   "file": "e2mfc.dll",
+   "tag": "e2mfc",
+   "prefix": "e2mfc_",
+   "guest_base": 8912896,
+   "preferred_base": 268435456,
+   "size_of_image": 434176,
+   "entry_rva": 255579,
+   "sha256": "9107267fd91d101782f00689431d2faaf7ec8e1984b1a37a189f9c26c09d4d72"
+  },
+  {
+   "file": "T_GraphMFC.dll",
+   "tag": "t_graphmfc",
+   "prefix": "t_graphmfc_",
+   "guest_base": 9371648,
+   "preferred_base": 268435456,
+   "size_of_image": 36864,
+   "entry_rva": 15307,
+   "sha256": "0d1fc2c9dae1af032b19e29eb8083a73fee95ffed32d97bbfe863f6aa91c8419"
+  },
+  {
+   "file": "KF2MFC.dll",
+   "tag": "kf2mfc",
+   "prefix": "kf2mfc_",
+   "guest_base": 9437184,
+   "preferred_base": 268435456,
+   "size_of_image": 372736,
+   "entry_rva": 219506,
+   "sha256": "ae16ab1360d20c1478334e9d55b989b782baf6db8a3f5a67d95537f882b469ee"
+  },
+  {
+   "file": "PSysLibMFC.dll",
+   "tag": "psyslibmfc",
+   "prefix": "psyslibmfc_",
+   "guest_base": 9830400,
+   "preferred_base": 268435456,
+   "size_of_image": 106496,
+   "entry_rva": 63606,
+   "sha256": "94be26fe728fb5e3cda23398245846555f20774093346e39f1ba78ca48b5f3e5"
+  },
+  {
+   "file": "sndmfc.dll",
+   "tag": "sndmfc",
+   "prefix": "sndmfc_",
+   "guest_base": 9961472,
+   "preferred_base": 268435456,
+   "size_of_image": 106496,
+   "entry_rva": 60362,
+   "sha256": "82940ecb52cdf7ccbf9115f88582ae718f6da9ed8d2a0864e6078a067b41782c"
+  },
+  {
+   "file": "X_HelpersMFC.dll",
+   "tag": "x_helpersmfc",
+   "prefix": "x_helpersmfc_",
+   "guest_base": 10092544,
+   "preferred_base": 268435456,
+   "size_of_image": 53248,
+   "entry_rva": 20570,
+   "sha256": "770410fe92095c1e0f768f4e10168c8fc551bc0cf6aec03f83c21b12c426689e"
+  },
+  {
+   "file": "X_SharedDBMFC.dll",
+   "tag": "x_shareddbmfc",
+   "prefix": "x_shareddbmfc_",
+   "guest_base": 10158080,
+   "preferred_base": 268435456,
+   "size_of_image": 450560,
+   "entry_rva": 209227,
+   "sha256": "02684e6465ea6097a50d01a48d785d98b3197df1966f4ccb1d18e3b576375c54"
+  },
+  {
+   "file": "X_MessageMFC.dll",
+   "tag": "x_messagemfc",
+   "prefix": "x_messagemfc_",
+   "guest_base": 10616832,
+   "preferred_base": 268435456,
+   "size_of_image": 135168,
+   "entry_rva": 72507,
+   "sha256": "0cb2b59eec07c6fec01e5390f2a06977c8bfd733005eca87218477baec2649de"
+  },
+  {
+   "file": "X_Inputmfc.dll",
+   "tag": "x_inputmfc",
+   "prefix": "x_inputmfc_",
+   "guest_base": 10813440,
+   "preferred_base": 268435456,
+   "size_of_image": 81920,
+   "entry_rva": 37355,
+   "sha256": "196dd65447d6614c7ede82fb6f4bf902712df1dbfe15df2589d99247dd69c27c"
+  },
+  {
+   "file": "X_PhysicalSimulationMFC.dll",
+   "tag": "x_physicalsimulationmfc",
+   "prefix": "x_physicalsimulationmfc_",
+   "guest_base": 10944512,
+   "preferred_base": 268435456,
+   "size_of_image": 868352,
+   "entry_rva": 639282,
+   "sha256": "cd97cb986712f7f540e7af83353f4980b6c7affc997bd657946b78ec3f77c99f"
+  },
+  {
+   "file": "X_LevelMFC.dll",
+   "tag": "x_levelmfc",
+   "prefix": "x_levelmfc_",
+   "guest_base": 11862016,
+   "preferred_base": 268435456,
+   "size_of_image": 126976,
+   "entry_rva": 62529,
+   "sha256": "0c37c97e81d93619db6f0a4b03947c4a05a4a45aef50b5df970ee4a58463ccd7"
+  },
+  {
+   "file": "X_LevelRuntimeMFC.dll",
+   "tag": "x_levelruntimemfc",
+   "prefix": "x_levelruntimemfc_",
+   "guest_base": 11993088,
+   "preferred_base": 268435456,
+   "size_of_image": 118784,
+   "entry_rva": 57962,
+   "sha256": "42565f3579eaf1f2d592cd4b60db9257d1bb1cc5d9f6de17d4a57545c14252b3"
+  },
+  {
+   "file": "X_AudioMFC.dll",
+   "tag": "x_audiomfc",
+   "prefix": "x_audiomfc_",
+   "guest_base": 12124160,
+   "preferred_base": 268435456,
+   "size_of_image": 225280,
+   "entry_rva": 117630,
+   "sha256": "975efe0460c7417ed15778796c4362f7b24a908800bd53577c0c2a1a4ecebb27"
+  },
+  {
+   "file": "X_ModesMFC.dll",
+   "tag": "x_modesmfc",
+   "prefix": "x_modesmfc_",
+   "guest_base": 12386304,
+   "preferred_base": 268435456,
+   "size_of_image": 204800,
+   "entry_rva": 98942,
+   "sha256": "5491f25aa2d6986511c3af32754108dde2a0220c0aeb69c8db16f0f541c26556"
+  },
+  {
+   "file": "X_BasicModesMFC.dll",
+   "tag": "x_basicmodesmfc",
+   "prefix": "x_basicmodesmfc_",
+   "guest_base": 12648448,
+   "preferred_base": 268435456,
+   "size_of_image": 327680,
+   "entry_rva": 176515,
+   "sha256": "7812180685d6cc1821b94c71739226ecd461052e2c204e46b824b486bdaf6895"
+  },
+  {
+   "file": "X_GameObjectsMFC.dll",
+   "tag": "x_gameobjectsmfc",
+   "prefix": "x_gameobjectsmfc_",
+   "guest_base": 12976128,
+   "preferred_base": 268435456,
+   "size_of_image": 1925120,
+   "entry_rva": 1069896,
+   "sha256": "98823044e9ba0e9dfd61c0008c1831a2372cfccd7a287314cc93e50b30ae2628"
+  },
+  {
+   "file": "e2driver/binkw32.dll",
+   "tag": "binkw32",
+   "prefix": "binkw32_",
+   "guest_base": 14942208,
+   "preferred_base": 805306368,
+   "size_of_image": 466944,
+   "entry_rva": 27313,
+   "sha256": "2d0ae23a6175dc7b635c402a5e7e9542e923c0d1c376a8c5ef876ca0d5959d23"
+  },
+  {
+   "file": "e2driver/e2_d3d8_driver_mfc.dll",
+   "tag": "e2_d3d8_driver_mfc",
+   "prefix": "e2_d3d8_driver_mfc_",
+   "guest_base": 15466496,
+   "preferred_base": 268435456,
+   "size_of_image": 552960,
+   "entry_rva": 350642,
+   "sha256": "9d72637c51f7a17dd9d95b079e5508ecbe8f1799c34395e0876945d741ff11ae"
+  }
+ ],
+ "excluded": {
+  "BugReport.exe": "informador de errores externo; no participa en el juego",
+  "SysInfo.dll": "solo la usa BugReport.exe",
+  "d3d9.dll": "cargador ASI de terceros, no es parte del juego",
+  "scripts/MaxPayne2.WidescreenFix.asi": "mod de terceros; se evalúa después de un arranque limpio",
+  "unins000.exe": "desinstalador",
+  "DirectX/dxwebsetup.exe": "instalador de DirectX",
+  "eax.dll": "sndmfc importa EAX por ordinal: pendiente de decidir puente nativo o lift",
+  "oleacc.dll": "dependencia de accesibilidad de mfc71; el motor no la importa"
+ }
+}

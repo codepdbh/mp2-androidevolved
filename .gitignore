@@ -13,3 +13,9 @@ __pycache__/
 /android/app/build/
 /android/build/
 /android/local.properties
+# Instalación comercial de PC y todo lo derivado de ella: nunca al repositorio.
+/Max Payne 2 The Fall of Max Payne/
+/work/
+/src/recomp/generated/
+*.ras
+*.bik

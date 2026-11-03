@@ -1,5 +1,55 @@
 # Bloqueos y siguientes comprobaciones
 
+## Ruta de PC (2026-11-03, iteración 2)
+
+### Resuelto en esta iteración
+
+- **Excepciones C++.** `desktop/pc_host/mp2_seh.c` y `RECOMP_SEH_FRAMES` funcionan con una excepción real: captura, dos relanzados y unwind. Solo esa ruta está probada: faltan destructores en cadena y `__try` del juego.
+- **Lifter.** Condiciones tras `or`/`xor`, `pushaw`/`popaw`.
+- **Primera ventana, Direct3D y entrada.** Ya funcionan en Windows.
+
+### Incidente: escritura en el registro real
+
+Del 2026-11-03 12:13 a las 12:47, las ejecuciones del host crearon `HKCU\Software\Remedy Entertainment\Max Payne 2`. MFC obtiene `RegCreateKeyExA` y compañía por `GetProcAddress`, y eso esquivaba el registro virtual.
+
+- **Corregido:** `GetProcAddress` devuelve ahora los shims (`native32_shim_va`). En `boot_27` no hay ninguna llamada nativa de registro y las fechas de la clave no cambian.
+- **Pendiente del usuario:** la clave sigue ahí, con los ajustes del juego. El borrado desde la sesión fue denegado por los permisos. Para quitarla: `reg delete "HKCU\Software\Remedy Entertainment" /f`. Hay copia en `private/registry-backup/`.
+- **No se tocó:** `HKLM`, que es del instalador; la asociación `.mp2s`; Mis documentos.
+
+### Pendientes, por orden de llegada
+
+1. **Android es lo grande.** Todas las llamadas nativas (236 funciones de KERNEL32, 209 de USER32, 115 de GDI32) necesitan implementación propia, partiendo de `guest_*.inc` de Carbon. Gran parte de USER32 y GDI32 solo la pide `mfc71.dll`: hay que medir cuáles se usan. El registro virtual y la política del host son C específico de Windows y hay que llevarlos al runtime de Android.
+2. **Direct3D 8 → Vulkan.** El DXVK del árbol de Android (`1.9.2b`) no tiene D3D8.
+3. **Sonido sin verificar.** `DSOUND` y `eax.dll` nativos (x86) en Windows; el audio está silenciado por `waveOutSetVolume`. No se ha oído nada. En Android no hay implementación.
+4. **Excepciones de hardware.** Un acceso inválido dentro de un `__try` del juego acaba en informe de crash: el despacho solo cubre `RaiseException`.
+5. **Guardado.** Toda escritura va a `work/pc/sandbox/` con el nombre base, sin subcarpetas ni relectura. No se ha probado guardar: fallará o se comportará mal.
+6. **Bullet Time, Shootdodge y disparo sin confirmar.** Bullet Time y Shootdodge reaccionan, pero falta verlos fotograma a fotograma; para disparar hace falta un tramo con arma.
+7. **`AIM` no existe en PC** como control del jugador. Decisión de diseño pendiente: hoy va a `SNIPERZOOM`.
+8. **Comparar con el original.** Nada de esto se ha contrastado con el EXE original en la misma máquina. Tus ports tienen un modo oráculo (`NFSU2_NATIVE=1`) que sirve de modelo.
+
+### Divergencias de valores en el difftest
+
+12 casos en 4 funciones de `msvcr71`. Sin resolver; no se ha observado que afecten a lo ejecutado.
+
+| Función | Qué es | Divergencia |
+|---|---|---|
+| `0x00604CD8`, `0x00604F90` | Parte de `_adj_fdiv*`, `_adj_fprem` (solución al fallo FDIV del Pentium) | `st0` NaN en CPU, 0,0 recompilado |
+| `0x00606039` | Fragmento matemático x87 cerca de `modf` | `st0` inf en CPU, 1,0 recompilado |
+| `0x00635C6B` | Lee y limpia el estado x87 (`fnstsw`, `fnclex`) | Bit C3 (`0x4000`) activado en recompilado |
+
+Las otras 42 son `unicorn=True lifted=False`: parece un efecto del arnés, como documentó NFSU2, sin demostrarlo caso por caso.
+
+El x87 usa `double` de 64 bits en lugar de los 80 bits reales. Puede afectar a la física en casos límite.
+
+### Otros
+
+- `scripts/pc_recomp/coverage_gaps.py` copiado, sin ejecutar: la cobertura de `.text` no está medida.
+- Upstream de PCRecomp lleva 164 commits sin evaluar.
+- `MaxPayne2.WidescreenFix.asi` sin evaluar: hoy se juega a 640×480, escalado a la ventana.
+- Un fallo en un módulo sin la función catalogada es ruidoso, pero solo aparece al ejecutarla: los niveles siguientes pueden revelar más.
+
+## Ruta de PS2 (archivada)
+
 Actualización S25: programa completo instalado; se resolvieron búsqueda de
 módulos LOADFILE y drenaje cuadrático del vídeo. Persisten menús invertidos,
 HUD contextual y falta renderer GPU. AAudio de streaming y blend de campos

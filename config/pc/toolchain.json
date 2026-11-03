@@ -1,0 +1,11 @@
+{
+ "pcrecomp": {
+  "origin": "C:/Users/Sistemas/Documents/nfsu2-androidevolved/pcrecomp",
+  "upstream": "https://github.com/sp00nznet/pcrecomp",
+  "branch": "nfsu2-fixes",
+  "commit": "b278e8ab486a28302c1e5ae1510340ff83f4a167",
+  "local_patches": ["patches/pcrecomp/0001-seh-frames-and-or-xor-conditions.patch"]
+ },
+ "msvc": "14.51.36231",
+ "android_ndk": "28.2.13676358"
+}

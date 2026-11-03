@@ -1,0 +1,7 @@
+# Prueba del menú: mueve el cursor en varios pasos y captura; sin pulsar nada.
+# <frame> m <dx> <dy> <botones>
+800 m -40 0 0
+860 m -40 0 0
+920 m -40 0 0
+980 m 0 -25 0
+1040 m 0 -25 0

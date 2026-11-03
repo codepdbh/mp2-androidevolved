@@ -20,6 +20,13 @@
 ---
 
 > [!IMPORTANT]
+> **Migración en curso a la versión de PC.** La rama `migration/maxpayne2-pc-pcrecomp`
+> sustituye la ruta de PS2 por la recompilación estática del juego de PC con PCRecomp.
+> Estado real en [docs/PROGRESS.md](docs/PROGRESS.md) y plan en
+> [docs/PC_MIGRATION_AUDIT.md](docs/PC_MIGRATION_AUDIT.md). El resto de este README
+> describe aún la ruta de PS2, que queda como referencia.
+
+> [!IMPORTANT]
 > **Todavía no es jugable.** No hay menú, niveles, renderer, audio ni gameplay.
 > La APK actual es una herramienta de diagnóstico: ejecuta el arranque original
 > recompilado hasta la entrada de `main()` del juego y prueba los controles táctiles.

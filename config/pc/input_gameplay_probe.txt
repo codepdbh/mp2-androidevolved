@@ -1,0 +1,32 @@
+# Partida nueva en Detective y prueba de control en el hospital.
+# Controles por defecto medidos: W 17, A 30, D 32, Mayús izquierda 42, Espacio 57, C 46, Tab 15.
+# <frame> m <dx> <dy> <botones>    <frame> k <DIK> <0|1>
+900 m -60 -8 0
+920 m -58 -8 0
+1000 m 0 0 1
+1002 m 0 0 0
+1120 m -6 -24 0
+1180 m 0 0 1
+1182 m 0 0 0
+# Avanzar
+6100 k 17 1
+6350 k 17 0
+# Girar la cámara a la derecha
+6400 m 80 0 0
+6410 m 80 0 0
+6420 m 80 0 0
+6430 m 80 0 0
+# Clic izquierdo: disparar
+6500 m 0 0 1
+6530 m 0 0 0
+# Clic derecho: Bullet Time
+6600 m 0 0 2
+6660 m 0 0 0
+# Shootdodge: D con Mayús izquierda
+6800 k 32 1
+6815 k 42 1
+6825 k 42 0
+6900 k 32 0
+# Saltar
+7000 k 57 1
+7005 k 57 0

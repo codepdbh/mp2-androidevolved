@@ -1,4 +1,59 @@
-# Estado actual — programa completo instalado en S25, 2026-10-28
+# Estado actual — migración a PC, iteración 2, 2026-11-03
+
+**En Windows, Max Payne 2 de PC ya llega a jugarse: el código original recompilado corre desde el arranque hasta controlar a Max en el primer nivel.** Es un host x86 de validación que usa Windows y Direct3D 8 reales. **En Android todavía no se ejecuta nada de esto.** No se ha jugado el juego completo.
+
+**A. Migración.** Rama `migration/maxpayne2-pc-pcrecomp`. Nada de PS2 borrado; cambios previos conservados y copiados en `private/pre-pc-migration/`. Sin commits todavía.
+
+**B. Archivos de PC.** Versión confirmada por el juego: `Max Payne 2 v1.01`. Instalación local con español.
+
+**C. PCRecomp.** 24 módulos: 79 893 funciones, 9,44 millones de líneas de C, 0 fallos de lift, compilados con MSVC x86 ([detalle](RECOMPILATION_REPORT.md)).
+
+**D. Windows.** `boot_host.ps1 -AllowWindow`. Cada paso observado en capturas del back buffer y en registros:
+
+| Paso | Estado | Evidencia |
+|---|---|---|
+| 21 `DllMain` y entry point original | EJECUTA | `boot_03.log` en adelante |
+| Excepciones C++: captura, relanzado, unwind | EJECUTA | `COleException` real recorrió 3 niveles hasta el CRT |
+| Diálogo de inicio original, oculto, con `Play` | EJECUTA | Crea el dispositivo a 640×480 |
+| Driver recompilado y `Direct3DCreate8` | EJECUTA | `MILESTONE dispositivo creado` |
+| Vídeo Bink `startup.bik` | EJECUTA | Logo real, 30 fps |
+| Carga, menú principal en español | EJECUTA | Opciones atenuadas correctas, hover, ayuda |
+| Clic: `Partida nueva` y `Detective` | EJECUTA | Entrada sintética |
+| Novela gráfica en español y cinemática del motor | EJECUTA | Capturas 1500-5700 |
+| Control de Max en el hospital | EJECUTA | Correr, girar, desplazarse con física de la gabardina |
+| 12 303 frames, 7 minutos | EJECUTA | Sin fallos (`boot_23.log`, parado por el límite) |
+
+**Parcial:** Bullet Time (clic derecho) y Shootdodge (Mayús + dirección): el reloj del HUD reacciona y Max se desplaza, pero con capturas cada 50 frames no basta para confirmarlo.
+
+**No validado:** disparo (en este punto del juego Max no lleva arma), sonido (silenciado a propósito), niveles siguientes, guardado. No se ha comparado con el juego original: el destello del frame 6200 parece un efecto de pesadilla del propio juego, sin confirmar.
+
+**E. Android.** Sin cambios: la APK sigue siendo la de PS2. Solo compila un subconjunto a AArch64.
+
+**F. Renderer.** Sobre `d3d8.dll` de Windows. Ya hay medición real para especificar el de Android ([gráficos](GRAPHICS_COMPATIBILITY.md)).
+
+**G. HUD.** Once PNG intactos. `PcActionMapper` probado, pero sin conectar: el host entrega la entrada desde un guion, por la misma vía que usará el mapeador ([mapeo](INPUT_MAPPING_PC.md)).
+
+**H. Pruebas.**
+
+| Comando | Resultado |
+|---|---|
+| `scripts/pc_recomp/run_lift_selftest.ps1` (por instrucción) | 262 de 262 |
+| `scripts/pc_recomp/run_difftests.ps1` (7 módulos, funciones reales) | 2 635 de 2 689 casos coinciden; 42 asimetrías de fallo y 12 divergencias reales |
+| `tests/pc_action_mapper_test.cpp`, `tests/touch_engine_test.cpp` | PASS (compiladas con `cl`) |
+| `scripts/pc_recomp/compile_arm64_subset.sh` | 6 objetos, 0 fallos |
+| `boot_host.ps1 -AllowWindow -Frames 7300 -InputScript config\pc\input_gameplay_probe.txt` | Llega a controlar a Max |
+
+**I. Errores.** Ver [BLOCKERS.md](BLOCKERS.md).
+
+**Incidente.** Hasta `boot_25`, el juego escribió en el registro real del usuario: ver [BLOCKERS.md](BLOCKERS.md).
+
+**J. Siguiente objetivo.** Confirmar Bullet Time y Shootdodge fotograma a fotograma, y empezar la ejecución en ARM64: enlazar los 24 módulos con el runtime `guest_*` de Carbon en Android.
+
+# Historial — migración a PC, iteración 1, 2026-11-03
+
+Primera recompilación de los 24 módulos y arranque sin ventanas hasta `SetWindowsHookExA`.
+
+# Historial — programa completo PS2 instalado en S25, 2026-10-28
 
 Programa completo ARM64 enlazado e instalado. Vídeo real, SurfaceView y entrada
 SIO2 comprobados en el S25. Corregido el drenaje cuadrático de IPU_FROM: prueba

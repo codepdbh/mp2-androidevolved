@@ -1,4 +1,96 @@
-# Recompilación — revisión del avance del usuario, 2026-10-28
+# Recompilación de PC — iteración 1, 2026-11-03
+
+Herramienta: PCRecomp `nfsu2-fixes` (`b278e8a`) en `external/pcrecomp`, más `patches/pcrecomp/0001-seh-frames-and-or-xor-conditions.patch`.
+
+## Reproducir
+
+```powershell
+.\.venv\Scripts\python scripts\pc_analysis\pe_inventory.py "Max Payne 2 The Fall of Max Payne" work\pc\pe_inventory.json
+.\.venv\Scripts\python scripts\pc_recomp\layout_modules.py work\pc\pe_inventory.json config\pc\modules.json
+.\.venv\Scripts\python scripts\pc_recomp\recompile_modules.py --jobs 2
+.\.venv\Scripts\python scripts\pc_recomp\merge_dispatch.py work\pc\gen\merged
+powershell -File scripts\pc_recomp\boot_host.ps1 -Log boot
+powershell -File scripts\pc_recomp\run_difftests.ps1
+.\.venv\Scripts\python scripts\pc_recomp\summarize.py
+```
+
+Todo lo generado queda en `work/pc/`, ignorado por Git.
+
+## Resultado por módulo
+
+﻿| Módulo | Funciones | Líneas C | Fallos de lift | Instr. sin implementar | Excluidas (datos) |
+|---|---:|---:|---:|---:|---:|
+| `MaxPayne2.exe` | 12267 | 1068251 | 0 | 1 | 0 |
+| `msvcr71.dll` | 3172 | 1096823 | 0 | 34 | 2 |
+| `msvcp71.dll` | 3460 | 213952 | 0 | 0 | 0 |
+| `mfc71.dll` | 16342 | 1347735 | 0 | 4066 | 1419 |
+| `rlmfc.dll` | 1554 | 154353 | 0 | 1 | 1 |
+| `grphmfc.dll` | 651 | 70671 | 0 | 1 | 1 |
+| `e2mfc.dll` | 2911 | 248969 | 0 | 1 | 1 |
+| `T_GraphMFC.dll` | 188 | 10457 | 0 | 0 | 0 |
+| `KF2MFC.dll` | 2857 | 240244 | 0 | 1 | 1 |
+| `PSysLibMFC.dll` | 748 | 72223 | 0 | 0 | 0 |
+| `sndmfc.dll` | 722 | 47635 | 0 | 0 | 0 |
+| `X_HelpersMFC.dll` | 335 | 16515 | 0 | 0 | 0 |
+| `X_SharedDBMFC.dll` | 3177 | 221197 | 0 | 0 | 0 |
+| `X_MessageMFC.dll` | 974 | 81240 | 0 | 0 | 0 |
+| `X_Inputmfc.dll` | 538 | 27345 | 0 | 1 | 1 |
+| `X_PhysicalSimulationMFC.dll` | 4659 | 1855604 | 0 | 0 | 0 |
+| `X_LevelMFC.dll` | 846 | 70242 | 0 | 1 | 1 |
+| `X_LevelRuntimeMFC.dll` | 872 | 55562 | 0 | 0 | 0 |
+| `X_AudioMFC.dll` | 1559 | 100101 | 0 | 0 | 0 |
+| `X_ModesMFC.dll` | 1392 | 87345 | 0 | 0 | 0 |
+| `X_BasicModesMFC.dll` | 2315 | 180593 | 0 | 0 | 0 |
+| `X_GameObjectsMFC.dll` | 14333 | 1092267 | 0 | 1 | 1 |
+| `e2driver/binkw32.dll` | 1114 | 457752 | 0 | 17 | 1 |
+| `e2driver/e2_d3d8_driver_mfc.dll` | 2907 | 620178 | 0 | 2879 | 5 |
+| **Total** | 79893 | 9437254 | 0 | 7004 | 1434 |
+
+Las cifras incluyen funciones falsas que aún no se han filtrado: el número no es un recuento exacto de funciones reales.
+
+- **`mfc71.dll`.** Guarda sus datos dentro de `.text`, así que casi todas sus instrucciones sin implementar son datos decodificados.
+- **`e2_d3d8_driver_mfc.dll`.** Casi todas son 3DNow! de D3DX; el host quita 3DNow! de CPUID.
+- **Fallo ruidoso.** Cualquiera de ellas que llegue a ejecutarse detiene el proceso con su dirección: no se oculta.
+
+## Correcciones al flujo heredado de Carbon
+
+- **Falsos arranques.** Se decide sobre el bloque de entrada, y un export en código no se excluye. El filtro original condenaba `R_Script::parse` y `R_System::determineProcessorCaps`.
+- **Semillas de datos.** Una semilla relocalizada se descarta si su flujo lineal contiene instrucciones que MSVC no emite. Tapaba un inicializador real de `mfc71` en `0x6EA8DC`.
+- **`pushaw`/`popaw`.** Añadidas en `mw_lifter.py`: `determineProcessorCaps` las ejecuta en el arranque.
+- **Etiquetas sin definir.** Las funciones cuyo C no compilaría se excluyen tras el lift (2 en `mfc71`).
+- **Compilaciones incrementales.** El lift no reescribe archivos sin cambios.
+- **Arnés de difftest.** La base de la imagen ya no es fija en `0x400000`.
+
+## Corrección del lifter: condiciones tras `or` y `xor`
+
+`or ecx, eax; jge` generaba `CMP_GE(r, r)`, que siempre es cierto. Por eso `CString::GetBuffer` de `mfc71` nunca reservaba memoria y el arranque moría con `COleException` (`E_INVALIDARG`). El propio lift32 lo marcaba como aproximación pendiente. Ahora `or` y `xor` reducen las condiciones de orden igual que `test`. **El mismo bug está en tus ports de NFS**, que usan este lifter: conviene aplicar el parche y comprobarlos.
+
+`tools/lift/difftest.py` tiene 16 casos nuevos. Con el lifter anterior fallan 8; con el corregido, el total es 262 de 262.
+
+## Filtro por relocalizaciones
+
+En una DLL, cada relocalización marca un puntero de 4 bytes. Si una decodificación la pisa sin que sean exactamente un `disp32` o `imm32`, son datos. Es la mejor señal de la iteración: sacó del catálogo los falsos arranques de `mfc71`, que tapaban el gancho CBT de MFC. En módulos de código puro marca 32 de 510 007 instrucciones, todas tablas de salto decodificadas.
+
+Además, las semillas relocalizadas que quedan tapadas por otra función se añaden igualmente: dos funciones solapadas no se estorban.
+
+## Pruebas diferenciales
+
+Funciones hoja reales: bytes originales en Unicorn contra C recompilado compilado para x64.
+
+| Módulo | Funciones | Casos | Coinciden | Fallan | Omitidos | Clases de fallo |
+|---|---:|---:|---:|---:|---:|---|
+| `e2_d3d8_driver_mfc` | 250 | 286 | 283 | 3 | 464 | fault: unicorn=True lifted=False ×3 |
+| `e2mfc` | 250 | 328 | 326 | 2 | 422 | fault: unicorn=True lifted=False ×2 |
+| `exe` | 250 | 437 | 434 | 3 | 313 | fault: unicorn=True lifted=False ×3 |
+| `msvcr71` | 250 | 475 | 441 | 34 | 275 | fault: unicorn=True lifted=False ×20; st0: cpu nan lifted 0.0 ×9; st0: cpu inf lifted 1.0 ×2; eax: cpu 00000000 lifted 00004000 ×3; ecx: cpu 10080000 lifted 10084000 ×1; ecx: cpu 00000000 lifted 00004000 ×2 |
+| `rlmfc` | 212 | 389 | 386 | 3 | 247 | fault: unicorn=True lifted=False ×3 |
+| `x_gameobjectsmfc` | 250 | 436 | 435 | 1 | 314 | fault: unicorn=True lifted=False ×1 |
+| `x_physicalsimulationmfc` | 250 | 338 | 330 | 8 | 412 | fault: unicorn=True lifted=False ×8 |
+| **Total** | 1712 | 2689 | 2635 | 54 | 2447 | |
+
+Solo cubre funciones hoja: nada de llamadas, saltos indirectos ni la lógica del juego en conjunto. Las divergencias reales de `msvcr71` están en [BLOCKERS.md](BLOCKERS.md).
+
+# Historial PS2 — revisión del avance del usuario, 2026-10-28
 
 Actualización posterior: se corrigieron 39 instrucciones VSUB a VF0 en 20 funciones mediante un posprocesador verificable e idempotente. El ELF original conserva su hash. Pasan 25 CTest; esto no valida gameplay ni resuelve los menús invertidos.
 

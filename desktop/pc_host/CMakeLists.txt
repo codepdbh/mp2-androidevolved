@@ -1,0 +1,41 @@
+# Host de validación de MP2 en Windows (MSVC x86).
+cmake_minimum_required(VERSION 3.20)
+project(MP2PcHost C)
+if(NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
+  message(FATAL_ERROR "El host de validación requiere MSVC x86")
+endif()
+get_filename_component(MP2_ROOT "${CMAKE_SOURCE_DIR}/../.." ABSOLUTE)
+set(PCRECOMP "${MP2_ROOT}/external/pcrecomp" CACHE PATH "pcrecomp parcheado (nfsu2-fixes)")
+set(GEN_ROOT "${MP2_ROOT}/work/pc/gen" CACHE PATH "Código generado desde los binarios del juego")
+set(RT "${PCRECOMP}/runtime")
+if(NOT EXISTS "${GEN_ROOT}/merged/mp2_dispatch.c")
+  message(FATAL_ERROR "Ejecuta scripts/pc_recomp/recompile_modules.py y merge_dispatch.py primero")
+endif()
+
+set(DEFINITIONS RECOMP_FLAT_MEMORY RECOMP_STRICT_ICALL RECOMP_SEH_FRAMES _CRT_SECURE_NO_WARNINGS)
+set(INCLUDES "${RT}/recomp32" "${RT}/native32" "${RT}/hybrid" "${GEN_ROOT}/merged" "${CMAKE_SOURCE_DIR}")
+set(OBJECTS)
+file(GLOB MODULE_DIRS LIST_DIRECTORIES true "${GEN_ROOT}/*")
+foreach(dir ${MODULE_DIRS})
+  get_filename_component(tag "${dir}" NAME)
+  if(tag STREQUAL "merged" OR NOT IS_DIRECTORY "${dir}")
+    continue()
+  endif()
+  file(GLOB sources CONFIGURE_DEPENDS "${dir}/*recomp_[0-9]*.c")
+  add_library(gen_${tag} OBJECT ${sources})
+  target_include_directories(gen_${tag} PRIVATE ${INCLUDES} "${dir}")
+  target_compile_definitions(gen_${tag} PRIVATE ${DEFINITIONS})
+  target_compile_options(gen_${tag} PRIVATE /O1 /w /bigobj /GS- /fp:precise)
+  list(APPEND OBJECTS $<TARGET_OBJECTS:gen_${tag}>)
+endforeach()
+
+add_executable(mp2_pc_host
+  mp2_host.c mp2_shims.c mp2_seh.c mp2_registry.c mp2_d3d8_trace.c mp2_measure.c mp2_runtime.c "${GEN_ROOT}/merged/mp2_dispatch.c"
+  "${RT}/native32/native32.c" "${RT}/hybrid/hybrid.c" "${RT}/recomp32/image_loader.c" "${RT}/recomp32/recomp_trace.c"
+  ${OBJECTS})
+target_include_directories(mp2_pc_host PRIVATE ${INCLUDES})
+target_compile_definitions(mp2_pc_host PRIVATE ${DEFINITIONS})
+target_compile_options(mp2_pc_host PRIVATE /O2 /W3 /Zi)
+target_link_options(mp2_pc_host PRIVATE /BASE:0x60000000 /DYNAMICBASE:NO /LARGEADDRESSAWARE /STACK:0x100000
+                    /DEBUG /SUBSYSTEM:CONSOLE /INCREMENTAL:NO)
+target_link_libraries(mp2_pc_host PRIVATE kernel32 user32 winmm dbghelp ws2_32)

@@ -1,0 +1,12 @@
+# Del menú principal a una partida nueva en Detective.
+# El ratón del menú va a 1,25 píxeles por unidad.
+# Cursor inicial en (322, 245); "Partida nueva" en (175, 225).
+# <frame> m <dx> <dy> <botones>
+900 m -60 -8 0
+920 m -58 -8 0
+1000 m 0 0 1
+1002 m 0 0 0
+# "Detective" en (176, 198), desde el cursor en (184, 228).
+1120 m -6 -24 0
+1180 m 0 0 1
+1182 m 0 0 0

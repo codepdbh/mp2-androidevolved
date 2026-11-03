@@ -1,0 +1,138 @@
+diff --git a/runtime/native32/native32.c b/runtime/native32/native32.c
+index 6cae03d..b2cecd0 100644
+--- a/runtime/native32/native32.c
++++ b/runtime/native32/native32.c
+@@ -398,6 +398,14 @@ recomp_func_t recomp_lookup_import(uint32_t va) {
+     return native_bridge;
+ }
+ 
++/* El VA de un shim por nombre: lo que un host debe devolver en GetProcAddress para
++ * que una funci?n obtenida en ejecuci?n no se salte el shim. */
++uint32_t native32_shim_va(const char* name) {
++    for (int i = 0; i < g_nshims; i++)
++        if (!strcmp(g_shims[i].name, name)) return g_shims[i].va;
++    return 0;
++}
++
+ /* Built-in shims every host gets, ahead of its own.
+  *
+  * CreateThread: the thread runs LIFTED code on its native stack, and a lifted
+diff --git a/runtime/native32/native32.h b/runtime/native32/native32.h
+index 39ec227..cf8fcba 100644
+--- a/runtime/native32/native32.h
++++ b/runtime/native32/native32.h
+@@ -58,6 +58,10 @@ int native32_bind(uint32_t base, native32_shim_t* shims, int nshims);
+ uint32_t native32_module(const char* name);
+ uint32_t native32_export(uint32_t base, const char* name);
+ 
++/* VA of a shim by name, 0 if none. Shim GetProcAddress with it: a function fetched
++ * at run time must not bypass its shim. */
++uint32_t native32_shim_va(const char* name);
++
+ /* Run lifted code at va to completion on this thread's guest stack. */
+ void native32_call_guest(uint32_t va, int nargs, const uint32_t* args);
+ 
+diff --git a/runtime/recomp32/recomp_types.h b/runtime/recomp32/recomp_types.h
+index 5286bd3..3fbaedd 100644
+--- a/runtime/recomp32/recomp_types.h
++++ b/runtime/recomp32/recomp_types.h
+@@ -120,14 +120,38 @@ extern const uint32_t recomp_dispatch_count;
+ #define esi l_esi
+ #define edi l_edi
+ #define ebp l_ebp
++#ifdef RECOMP_SEH_FRAMES
++#define RECOMP_REGS_LOCALS uint32_t l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp; uint32_t _seh_entry_esp = g_esp;
++#else
+ #define RECOMP_REGS_LOCALS uint32_t l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp;
++#endif
+ #define RECOMP_REGS_OUT() (g_eax = l_eax, g_ecx = l_ecx, g_edx = l_edx, g_ebx = l_ebx, g_esp = l_esp, g_esi = l_esi, g_edi = l_edi, g_ebp = l_ebp)
+ #define RECOMP_REGS_IN() (l_eax = g_eax, l_ecx = g_ecx, l_edx = g_edx, l_ebx = g_ebx, l_esp = g_esp, l_esi = g_esi, l_edi = g_edi, l_ebp = g_ebp)
+ #else
++#ifdef RECOMP_SEH_FRAMES
++#define RECOMP_REGS_LOCALS uint32_t _seh_entry_esp = g_esp;
++#else
+ #define RECOMP_REGS_LOCALS
++#endif
+ #define RECOMP_REGS_OUT() ((void)0)
+ #define RECOMP_REGS_IN() ((void)0)
+ #endif
++
++/* RECOMP_SEH_FRAMES: una llamada recompilada es una llamada C, as? que tras una
++ * excepci?n C++ la continuaci?n del catch corre encima de los marcos C que el
++ * throw dej? debajo. Cuando esa funci?n retorna, la pila invitada ya est? por
++ * encima de la entrada de esos marcos: est?n muertos y solo les queda retornar,
++ * hasta llegar al llamador real, cuya pila vuelve a cuadrar. */
++#ifdef RECOMP_SEH_FRAMES
++#define RECOMP_SEH_CHECK() do { if ((uint32_t)esp > _seh_entry_esp) { RECOMP_RETURN(); } } while (0)
++/* El cuerpo de un __except entra con la pila profunda y empieza con
++ * mov esp, [ebp-18h]: sube la pila por encima de su propia entrada sin estar
++ * muerto. Es una continuaci?n: desde ah? no se le aplica la comprobaci?n. */
++#define RECOMP_SEH_ESP_MOVED() do { if ((uint32_t)esp > _seh_entry_esp) _seh_entry_esp = 0xFFFFFFFFu; } while (0)
++#else
++#define RECOMP_SEH_CHECK() ((void)0)
++#define RECOMP_SEH_ESP_MOVED() ((void)0)
++#endif
+ /* The one way out of a lifted function body: the registers go back to the
+  * globals first when they are locals. */
+ #define RECOMP_RETURN() do { RECOMP_REGS_OUT(); return; } while (0)
+@@ -1075,6 +1099,7 @@ void recomp_unresolved(const char *kind, uint32_t va, uint32_t from);
+     func(); \
+     RECOMP_REGS_IN(); \
+     g_cur_func = _caller;  /* the callee RECOMP_ENTER clobbered it */ \
++    RECOMP_SEH_CHECK(); \
+ } while(0)
+ 
+ /* Indirect call through dispatch */
+@@ -1095,6 +1120,7 @@ void recomp_unresolved(const char *kind, uint32_t va, uint32_t from);
+         _fn(); \
+         RECOMP_REGS_IN(); \
+         g_cur_func = _caller;  /* the callee RECOMP_ENTER clobbered it */ \
++        RECOMP_SEH_CHECK(); \
+     } else { \
+         /* Nothing was pushed on this path, so there is nothing to pop: an \
+          * `esp += 4` here shifted the caller's stack by one slot per miss. \
+diff --git a/tools/lift/difftest.py b/tools/lift/difftest.py
+index 9a363df..0f0732d 100644
+--- a/tools/lift/difftest.py
++++ b/tools/lift/difftest.py
+@@ -295,6 +295,11 @@ CASES = [
+     Case('and.clears-cf', bytes.fromhex('f921c8')),           # stc; and eax, ecx
+     Case('xor.self', bytes.fromhex('f931c0')),                # stc; xor eax, eax
+     Case('or', bytes.fromhex('09c8')),                        # or eax, ecx
++    # Condiciones de orden tras or/xor: CF=OF=0, se leen del resultado.
++    *[Case(f'{op}.set{cc}', bytes.fromhex(f'{opcode}c80f{setcc}c2'))
++      for op, opcode in (('or', '09'), ('xor', '31'))
++      for cc, setcc in (('b', '92'), ('ae', '93'), ('be', '96'), ('a', '97'),
++                        ('l', '9c'), ('ge', '9d'), ('le', '9e'), ('g', '9f'))],
+     Case('test', bytes.fromhex('85c8')),                      # test eax, ecx
+ 
+     # --- shifts: CF is the running _cf, not the tuple ---
+diff --git a/tools/lift/lift32.py b/tools/lift/lift32.py
+index 1e58e89..40532a3 100644
+--- a/tools/lift/lift32.py
++++ b/tools/lift/lift32.py
+@@ -675,11 +675,19 @@ class Lifter:
+             # as a subtraction, so the pairing is exact.
+             return f"/* sub result */ {cmp_macro}({ops})"
+         elif setter in ('or', 'xor'):
+-            # Logical ops clear CF and set ZF/SF from the result. `and` is
+-            # handled above, where the TEST_* macros compute exactly its result.
+-            # ponytail: or/xor keep the old pairing -- TEST_* computes `a & b`,
+-            # which is NOT their result, so an ordering jcc after one of them is
+-            # still approximate. Give them their own macros if one ever shows up.
++            # Logical ops clear CF and OF and set ZF/SF from the result. Both
++            # flag operands hold that result, so TEST_* (a & a) reads it exactly
++            # and the ordering jccs reduce as after `test`. CMP_* compared the
++            # value with itself: `or ecx, eax; jge` always jumped, and CString::
++            # GetBuffer in mfc71 never allocated (nShared | nTooShort < 0).
++            or_xor = {
++                'jbe': f"TEST_Z({ops})",  'ja':  f"TEST_NZ({ops})",
++                'jb':  "0",               'jae': "1",
++                'jg':  f"TEST_G({ops})",  'jle': f"TEST_LE({ops})",
++                'jge': f"TEST_NS({ops})", 'jl':  f"TEST_S({ops})",
++            }
++            if jform in or_xor:
++                return f"/* {setter} result */ {or_xor[jform]}"
+             if test_macro:
+                 return f"/* {setter} result */ {test_macro}({ops})"
+             return f"/* {setter} result */ {cmp_macro}({ops})"
