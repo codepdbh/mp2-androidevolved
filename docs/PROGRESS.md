@@ -257,8 +257,10 @@ usuario en `Memoria interna/mp2` (nunca dentro de la APK).
   fmod(0, 40) de msvcr71 devolvía 40 y el motor tomaba el último fotograma al reiniciar el
   ciclo de la animación. Las matemáticas de la CRT van en nativo en ambos hosts
   (src/runtime/pc/mp2_math_overrides.h). Validado solo con la carrera recta del primer nivel.
-- WidescreenFix: se carga y parchea en el S25 y el primer nivel se ve panorámico; falta
-  revisar HUD y cinemáticas con detalle.
+- WidescreenFix: comprobado en el S25 en menú, novela gráfica, primera cinemática y primer
+  nivel. La cinemática en negro venía de Clear con rectángulos vacíos (bandas de altura cero
+  o negativa en pantallas anchas), que el puente D3D8 ahora descarta.
+- El usuario probó esta versión en el S25 e informa que de momento todo funciona bien.
 - COMPILA, sin probar en el teléfono: idiomas del launcher y del juego, editor de controles
   durante la partida y editor del launcher. Los botones ya se ocultan fuera del gameplay.
 - Sin confirmar: disparo, Bullet Time, Shootdodge, guardado, partida completa, mando.
