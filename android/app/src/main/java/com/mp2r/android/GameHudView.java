@@ -216,7 +216,8 @@ final class GameHudView extends View {
     }
 
     @Override protected void onDraw(Canvas canvas) {
-        if (menuMode && !editing) return;  // Menús, cinemáticas y novela gráfica: nada encima.
+        // Fuera del gameplay solo queda Pausa (Esc): es lo que salta cinemáticas y novela gráfica.
+        if (menuMode && !editing) { draw(canvas, pause); return; }
         stickPaint.setStyle(Paint.Style.STROKE);
         stickPaint.setStrokeWidth(4);
         stickPaint.setAlpha(110);
@@ -275,7 +276,7 @@ final class GameHudView extends View {
     }
 
     private Button buttonAt(float x, float y) {
-        if (menuMode) return null;
+        if (menuMode) return pause.rect.contains(x, y) ? pause : null;
         for (Button b : buttons) if (b.rect.contains(x, y)) return b;
         return null;
     }

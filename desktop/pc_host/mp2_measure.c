@@ -217,7 +217,11 @@ void mp2_measure_watch_init(void) {
     g_watch_fn = recomp_lookup(g_watch_entry);
 }
 
+#include "../../src/runtime/pc/mp2_math_overrides.h"
+
 recomp_func_t recomp_lookup_manual(uint32_t va) {
+    recomp_func_t math = mp2_math_lookup(va);
+    if (math) return math;
     if (va == g_control_set_va) return log_control_set;
     return va == g_watch_entry && va ? watch_entry : NULL;
 }

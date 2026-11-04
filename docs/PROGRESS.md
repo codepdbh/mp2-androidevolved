@@ -253,8 +253,10 @@ usuario en `Memoria interna/mp2` (nunca dentro de la APK).
 - Corregido y comprobado en el S25: pantalla negra al entrar en partida (la causaban
   versiones nativas de la CRT, retiradas); el motor de sonido ya crea sus búferes (el
   mezclador pasa de 0 a 12 voces). Falta que una persona confirme cómo suena.
-- BLOQUEADO: al caminar, Max vuelve de golpe a una posición anterior; reproducido en el S25,
-  causa aún sin confirmar. Hipótesis en estudio: el contador de alta resolución a 1 GHz.
+- Corregido y comprobado en el S25: al caminar, Max volvía de golpe a una posición anterior.
+  fmod(0, 40) de msvcr71 devolvía 40 y el motor tomaba el último fotograma al reiniciar el
+  ciclo de la animación. Las matemáticas de la CRT van en nativo en ambos hosts
+  (src/runtime/pc/mp2_math_overrides.h). Validado solo con la carrera recta del primer nivel.
 - WidescreenFix: se carga y parchea en el S25 y el primer nivel se ve panorámico; falta
   revisar HUD y cinemáticas con detalle.
 - COMPILA, sin probar en el teléfono: idiomas del launcher y del juego, editor de controles

@@ -2,21 +2,12 @@
  * llamadas indirectas: las de otros módulos pasan por la IAT y las virtuales por su
  * vtable. Las direcciones salen de los exports (config/pc/modules.json fija las bases). */
 #include "recomp_types.h"
+#include "../../../../../src/runtime/pc/mp2_math_overrides.h"
 #include <math.h>
 #include <string.h>
 #include <time.h>
 
 typedef void (*mp2_override_fn)(void);
-
-/* _CIpow de msvcr71: ST(1) es la base y ST(0) el exponente. Sus rutas x87 escritas a
- * mano de clasificación y error no se representan bien en la pila de dobles del
- * lifter, igual que en el port de Carbon (misma DLL, base distinta). */
-static void ci_pow(void) {
-    double exponent = fp_pop_impl(g_st, &g_fp_top);
-    double base = fp_pop_impl(g_st, &g_fp_top);
-    fp_push_impl(g_st, &g_fp_top, pow(base, exponent));
-    g_esp += 4;
-}
 
 /* Las versiones nativas de memcpy, strcmp, tolower y compañía se probaron y se retiraron:
  * con ellas la partida nueva se quedaba en negro tras la novela gráfica, y solo adelantaban
@@ -56,9 +47,10 @@ static void mouse_relative(void) {
 }
 
 mp2_override_fn mp2_override_lookup(uint32_t va) {
+    recomp_func_t math = mp2_math_lookup(va);
+    if (math) return math;
     switch (va) {
     case 0x00A56B50u: return mouse_relative;
-    case 0x0060406Fu: return ci_pow;
     case 0x00C15F00u: return menu_update;
     default: return 0;
     }
