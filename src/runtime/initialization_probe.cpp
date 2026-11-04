@@ -78,7 +78,7 @@ InitializationResult runInitialization(const uint8_t* elf,std::size_t bytes,std:
                     watch_value=now;
                 }
             } else if(watch && MP2InitializationRuntime::readWord(ram.data(),watch)==watch_value) {
-                log<<"watch 0x"<<std::hex<<watch<<" = 0x"<<watch_value<<" at pc=0x"<<cpu.pc<<" irq="<<bool(host.interrupt)<<" recent:";
+                log<<"watch 0x"<<std::hex<<watch<<" = 0x"<<watch_value<<" at pc=0x"<<cpu.pc<<" irq="<<bool(host.interrupt)<<" regs:"; { auto* c=&cpu; for(int r:{2,3,4,5,6,7,16,17,18,19,20,21,22,23,29,31}) log<<" r"<<std::dec<<r<<"=0x"<<std::hex<<GPR_U32(c,r); } log<<" recent:";
                 for(unsigned i=0;i<16;++i) { const auto& b=host.recent_branches[(host.dispatches+host.recent_branches.size()-16+i)%host.recent_branches.size()]; log<<" 0x"<<b.first<<"->0x"<<b.second; }
                 log<<std::dec<<'\n'; watch=0;
             }

@@ -26,7 +26,10 @@ public:
             uint64_t top=uint64_t(thread.stack)+thread.size;
             if(thread.stack==0 || thread.size==0 || top>PS2_RAM_SIZE || (thread.gp&3))
                 throw std::runtime_error("Unsupported bootstrap thread arguments");
-            thread.initial_sp=static_cast<uint32_t>(top)&~15u;
+            // The EE kernel keeps 0x2A0 bytes (the thread context area) at the top of the main
+            // thread's stack. MP2's level snapshots (LV/xx/CAPTUREF.MEC, RAM captured on hardware)
+            // hold pointers into main()'s frame that are only valid with this placement.
+            thread.initial_sp=static_cast<uint32_t>(top-0x2a0u)&~15u;
             SET_GPR_U32(cpu,28,thread.gp);
             SET_GPR_U32(cpu,2,thread.initial_sp);
         } else if(number==0x3d) {

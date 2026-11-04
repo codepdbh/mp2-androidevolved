@@ -389,6 +389,8 @@ public:
     // MP2R_TRACE_FROM_IPU=N logs the 3000 guest branches that follow the Nth IPU command.
     // MP2R_TRACE_AT=<hex pc> logs 4000 guest branches from the first dispatch to that pc.
     uint32_t trace_at=[]{ const char* v=std::getenv("MP2R_TRACE_AT"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
+    uint32_t regs_at=[]{ const char* v=std::getenv("MP2R_REGS_AT"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }(); unsigned regs_at_count{};
+    uint32_t regs_a0_min=[]{ const char* v=std::getenv("MP2R_REGS_A0_MIN"); return v?uint32_t(std::strtoul(v,nullptr,16)):0u; }();
     unsigned trace_ipu_from=[]{ const char* v=std::getenv("MP2R_TRACE_FROM_IPU"); return v?unsigned(std::atoi(v)):0u; }(),trace_branches{};
     static bool ipuRegister(uint32_t a) { auto p=a&0x1fffffffu; return p>=0x10002000u && p<0x10002040u; }
     uint64_t ipuRead(uint32_t a) {
@@ -658,6 +660,14 @@ public:
                              uint32_t,GuestBranchKind,const char*) {
         recent_branches[dispatches%recent_branches.size()]={from,target};
         if(target==trace_at && trace_at) { trace_at=0; trace_branches=4000; log<<"trace start at 0x"<<std::hex<<target<<std::dec<<'\n'; }
+        // MP2R_REGS_AT=<hex pc>: log a0-a3/ra/sp (and 8 recent branches) on the first 20 dispatches to that pc.
+        if(target==regs_at && regs_at && regs_at_count<20 && GPR_U32(cpu,4)>=regs_a0_min) {
+            ++regs_at_count;
+            log<<std::hex<<"regs at 0x"<<target<<" from 0x"<<from<<" a0=0x"<<GPR_U32(cpu,4)<<" a1=0x"<<GPR_U32(cpu,5)<<" a2=0x"<<GPR_U32(cpu,6)
+               <<" a3=0x"<<GPR_U32(cpu,7)<<" ra=0x"<<GPR_U32(cpu,31)<<" sp=0x"<<GPR_U32(cpu,29)<<" s0=0x"<<GPR_U32(cpu,16)<<" s1=0x"<<GPR_U32(cpu,17)<<" s4=0x"<<GPR_U32(cpu,20)<<" recent:";
+            for(unsigned i=0;i<8;++i) { const auto& b=recent_branches[(dispatches+recent_branches.size()-8+i)%recent_branches.size()]; log<<" 0x"<<b.first<<"->0x"<<b.second; }
+            log<<std::dec<<'\n';
+        }
         if(trace_branches) { --trace_branches; log<<"T 0x"<<std::hex<<from<<"->0x"<<target<<std::dec<<'\n'; }
         ++dispatches; source=from;
         if(dispatches<=64) log<<"branch 0x"<<std::hex<<from<<" -> 0x"<<target<<std::dec<<'\n';
@@ -941,11 +951,31 @@ public:
     // Guest faults stop precisely; MP2R has no BIOS exception vectors to deliver them to.
     void handleBreak(uint8_t*,R5900Context* cpu) { stopAccess(cpu,"guest_break",cpu->pc); }
     void handleTrap(uint8_t*,R5900Context* cpu) { stopAccess(cpu,"guest_trap",cpu->pc); }
-    void vu0StartMicroProgram(uint8_t*,R5900Context* cpu,uint32_t address) { stopAccess(cpu,"vu0_microprogram_required",address); }
+    // VU0 micro mode (VCALLMS/VCALLMSR): the microprogram shares VF/VI/ACC/Q/P/I/R and the flags
+    // with COP2 macro mode, so they are taken from and returned to the EE context around the run.
+    mp2r::EeVu vu0=[this]{ mp2r::EeVu v; v.code=special.vu(0x0000); v.code_pairs=0x1000/8; v.data=special.vu(0x4000); v.data_qwords=0x1000/16; return v; }();
+    void runVu0(R5900Context* cpu,uint32_t address) {
+        for(int i=0;i<32;++i) _mm_storeu_ps(vu0.vf[i].data(),cpu->vu0_vf[i]);
+        for(int i=0;i<16;++i) vu0.vi[i]=cpu->vi[i];
+        vu0.vi[0]=0; vu0.vf[0]={0,0,0,1};
+        _mm_storeu_ps(vu0.acc.data(),cpu->vu0_acc);
+        vu0.q=cpu->vu0_q; vu0.p=cpu->vu0_p; vu0.i=cpu->vu0_i;
+        { float r[4]; _mm_storeu_ps(r,cpu->vu0_r); std::memcpy(&vu0.r,&r[0],4); }
+        vu0.status=cpu->vu0_status; vu0.mac=cpu->vu0_mac_flags; vu0.clip=cpu->vu0_clip_flags;
+        if(!vu0.run(address==0xffffffffu?address:(address/8)&511)) { reason="vu0: "+vu0.stop_reason; blocked_source=cpu->pc; throw MemoryStop{}; }
+        for(int i=1;i<32;++i) cpu->vu0_vf[i]=_mm_loadu_ps(vu0.vf[i].data());
+        for(int i=1;i<16;++i) cpu->vi[i]=vu0.vi[i];
+        cpu->vu0_acc=_mm_loadu_ps(vu0.acc.data());
+        cpu->vu0_q=vu0.q; cpu->vu0_p=vu0.p; cpu->vu0_i=vu0.i;
+        { float r; std::memcpy(&r,&vu0.r,4); cpu->vu0_r=_mm_set1_ps(r); }
+        cpu->vu0_status=uint16_t(vu0.status); cpu->vu0_mac_flags=vu0.mac; cpu->vu0_clip_flags=vu0.clip;
+        cpu->vu0_tpc=vu0.pc*8;
+    }
+    void vu0StartMicroProgram(uint8_t*,R5900Context* cpu,uint32_t address) { runVu0(cpu,address); }
     void SignalException(R5900Context* cpu,PS2Exception exception) {
         reason="guest_exception_"+std::to_string(int(exception)); blocked_source=cpu->pc; throw MemoryStop{};
     }
-    void executeVU0Microprogram(uint8_t*,R5900Context* cpu,uint32_t address) { stopAccess(cpu,"vu0_microprogram_required",address); }
+    void executeVU0Microprogram(uint8_t*,R5900Context* cpu,uint32_t address) { runVu0(cpu,address); }
     static std::string hex(uint32_t value) {
         std::ostringstream text; text<<std::hex<<value; return text.str();
     }

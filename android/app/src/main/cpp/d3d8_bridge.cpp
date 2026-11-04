@@ -362,6 +362,21 @@ uint32_t dispatchGuestD3D8(uint32_t token, const uint32_t* args, uint32_t* argum
     if (kind == uint32_t(Kind::Device)) {
         auto device = static_cast<IDirect3DDevice8*>(object);
         switch (method) {
+        case 36: {
+            // Clear con rectángulos: en D3D8 uno vacío o invertido no borra nada, pero al llegar
+            // a DXVK borra la pantalla entera. Las bandas de cinemática del WidescreenFix tienen
+            // altura cero o negativa en pantallas anchas: era la cinemática en negro.
+            *argumentCount = 7;
+            uint32_t count = args[1];
+            auto rects = static_cast<const D3DRECT*>(pointer(args[2]));
+            if (!count || !rects)
+                return device->Clear(count, rects, args[3], args[4], floatValue(args[5]), args[6]);
+            std::vector<D3DRECT> valid;
+            for (uint32_t i = 0; i < count; ++i)
+                if (rects[i].x2 > rects[i].x1 && rects[i].y2 > rects[i].y1) valid.push_back(rects[i]);
+            if (valid.empty()) return D3D_OK;
+            return device->Clear(uint32_t(valid.size()), valid.data(), args[3], args[4], floatValue(args[5]), args[6]);
+        }
         case 3: *argumentCount = 1; return deviceResetPending ? D3DERR_DEVICENOTRESET : device->TestCooperativeLevel();
         case 14: {
             *argumentCount = 2;

@@ -1,0 +1,27 @@
+diff --git a/ps2xRecomp/src/lib/instruction_translator.cpp b/ps2xRecomp/src/lib/instruction_translator.cpp
+index 7684097..13a1ce7 100644
+--- a/ps2xRecomp/src/lib/instruction_translator.cpp
++++ b/ps2xRecomp/src/lib/instruction_translator.cpp
+@@ -129,14 +129,20 @@ namespace ps2recomp
+ 
+         const MemoryAccessHint effectiveMemoryHint = effectiveMemoryHintFor(inst, memoryHint);
+ 
++        // LQ/SQ/LQC2/SQC2 ignore the low four address bits on the R5900 (quadword aligned).
++        auto align = [](int width, const std::string &addr)
++        {
++            return width == 128 ? fmt::format("(({}) & ~15u)", addr) : addr;
++        };
++
+         auto genRead = [&](int width, const std::string &addr)
+         {
+-            return translateMemoryRead(inst, effectiveMemoryHint, width, addr);
++            return translateMemoryRead(inst, effectiveMemoryHint, width, align(width, addr));
+         };
+ 
+         auto genWrite = [&](int width, const std::string &addr, const std::string &val)
+         {
+-            return translateMemoryWrite(inst, effectiveMemoryHint, width, addr, val);
++            return translateMemoryWrite(inst, effectiveMemoryHint, width, align(width, addr), val);
+         };
+ 
+         switch (inst.opcode)

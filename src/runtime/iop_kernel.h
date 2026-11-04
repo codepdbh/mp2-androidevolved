@@ -314,6 +314,8 @@ public:
     void cdCommandComplete(std::chrono::nanoseconds delay={}) {
         uint32_t cb=cd_stream_flag==1?cd_stm_callback[0]:cd_stream_flag==2?cd_stm_callback[1]:0;
         cd_completions.push_back({mp2r::EmuClock::now()+delay,cb});
+        static const bool immediate=std::getenv("MP2R_CD_SYNC")!=nullptr;   // diagnostics: complete inside the call
+        if(immediate) fireCdCompletions(true);
     }
     void fireCdCompletions(bool all=false) {
         auto now=mp2r::EmuClock::now();

@@ -6,7 +6,8 @@
     "patches": [
       "patches/ps2recomp-r5900-tlb-cop0-masks.patch",
       "patches/ps2recomp-r5900-64bit-branch-compare.patch",
-      "patches/ps2recomp-mmi-fpu-semantics.patch"
+      "patches/ps2recomp-mmi-fpu-semantics.patch",
+      "patches/ps2recomp-quadword-alignment.patch"
     ]
   },
   {
