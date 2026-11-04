@@ -339,7 +339,12 @@ extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeWides
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeBackBuffers(JNIEnv*,jclass,jint count){setD3D8Compatibility(unsigned(count));}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeMouseMotion(JNIEnv*,jclass,jfloat dx,jfloat dy){addGuestMouseMotion(dx,dy);}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeMouseButton(JNIEnv*,jclass,jint button,jboolean down){setGuestMouseButton(unsigned(button),down==JNI_TRUE);}
-extern "C" JNIEXPORT jboolean JNICALL Java_com_mp2r_android_GameActivity_nativeMenuActive(JNIEnv*,jclass){return guestMenuActive()?JNI_TRUE:JNI_FALSE;}
+extern "C" JNIEXPORT jint JNICALL Java_com_mp2r_android_GameActivity_nativeScreenMode(JNIEnv*,jclass){return guestScreenMode();}
+static std::atomic<bool> hudEditing{false};
+extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeHudEditing(JNIEnv*,jclass,jboolean editing){hudEditing=editing==JNI_TRUE;}
+extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeHiddenFiles(JNIEnv* env,jclass,jstring names){
+    const char* text=env->GetStringUTFChars(names,nullptr);if(!text)return;setGuestHiddenFiles(text);env->ReleaseStringUTFChars(names,text);
+}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeFlags(JNIEnv* env,jclass,jstring flags){
     const char* text=env->GetStringUTFChars(flags,nullptr);if(!text)return;setGuestFlags(text);env->ReleaseStringUTFChars(flags,text);
 }
@@ -387,7 +392,7 @@ void android_main(android_app* app) {
         try {
             setD3D8HostWindow(app->window);
             if(d3d8RequestsSurface()){host.renderer.stop();acknowledgeD3D8Surface(true);}
-            setGuestPaused(false);
+            setGuestPaused(hudEditing.load());  // Editar los controles congela la partida.
             if(!customVulkanError.empty())throw std::runtime_error(customVulkanError);
             if (!host.renderer.device&&!d3d8RequestsSurface()&&!(customVulkanDriver&&host.guestAttempted)) {
                 checkGameData();

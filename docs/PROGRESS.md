@@ -248,12 +248,17 @@ GP/BSS y servicios requeridos por evidencia antes de llamar al entry point compl
 Runtime Android con los 25 módulos recompilados en ARM64, DXVK sobre Vulkan y datos del
 usuario en `Memoria interna/mp2` (nunca dentro de la APK).
 
-- EJECUTA en Galaxy S25 (Adreno 830, 2340x1080): vídeo Bink de inicio, carga, menú en
-  español y primer nivel con Max en pantalla, comprobados por capturas del teléfono.
-- WidescreenFix: se carga y aplica sus parches en Android. VALIDADO solo en Windows
-  (960x540, primer nivel); falta validarlo en el S25 con una prueba propia.
-- COMPILA, sin probar en el teléfono: launcher de ajustes, HUD que cambia solo entre menú
-  y juego, cursor táctil por posición exacta, CRT nativa y caché de directorios para la carga.
+- EJECUTA en Galaxy S25 (Adreno 830, 2340x1080): vídeo de inicio, menú en español a 60 FPS
+  en unos 34 s, novela gráfica y primer nivel, comprobados por capturas del teléfono.
+- Corregido y comprobado en el S25: pantalla negra al entrar en partida (la causaban
+  versiones nativas de la CRT, retiradas); el motor de sonido ya crea sus búferes (el
+  mezclador pasa de 0 a 12 voces). Falta que una persona confirme cómo suena.
+- BLOQUEADO: al caminar, Max vuelve de golpe a una posición anterior; reproducido en el S25,
+  causa aún sin confirmar. Hipótesis en estudio: el contador de alta resolución a 1 GHz.
+- WidescreenFix: se carga y parchea en el S25 y el primer nivel se ve panorámico; falta
+  revisar HUD y cinemáticas con detalle.
+- COMPILA, sin probar en el teléfono: idiomas del launcher y del juego, editor de controles
+  durante la partida y editor del launcher. Los botones ya se ocultan fuera del gameplay.
 - Sin confirmar: disparo, Bullet Time, Shootdodge, guardado, partida completa, mando.
 - Limitaciones conocidas: DirectSound 3D sin Doppler ni reverberación EAX; diálogos de
   Windows no disponibles (el de inicio se evita con los ajustes del registro virtual).

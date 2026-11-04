@@ -29,7 +29,7 @@ std::unordered_map<std::string,std::unordered_map<std::string,std::string>> game
 const std::unordered_map<std::string,std::string>& gameDirectoryListing(const std::string& directory){
     auto found=gameDirectories.find(directory);if(found!=gameDirectories.end())return found->second;
     auto& listing=gameDirectories[directory];std::error_code error;
-    for(auto& entry:std::filesystem::directory_iterator(directory,error)){auto name=entry.path().filename().string();listing[lower(name)]=name;}
+    for(auto& entry:std::filesystem::directory_iterator(directory,error)){auto name=entry.path().filename().string();if(!guestHiddenFiles.count(lower(name)))listing[lower(name)]=name;}
     return listing;
 }
 void forgetGameDirectories(){gameDirectories.clear();}
@@ -198,6 +198,7 @@ void findFirstFile(){
     std::error_code error;GuestFileSearch search;
     if(std::filesystem::is_directory(directory,error))for(const char* dot:{".",".."})if(filePatternMatches(pattern,dot))search.paths.push_back(directory/dot);
     for(auto& entry:std::filesystem::directory_iterator(directory,error)){
+        if(guestHiddenFiles.count(lower(entry.path().filename().string())))continue;
         if(!filePatternMatches(pattern,entry.path().filename().string()))continue;
         // Apply the same containment check used for ordinary file opens.
         auto logical="C:/mp2/"+entry.path().lexically_relative(std::filesystem::path(hostGameRoot)).string();

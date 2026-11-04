@@ -8,11 +8,12 @@ target_include_directories(native_app_glue PUBLIC "${ANDROID_NDK}/sources/androi
 
 get_filename_component(MP2_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../.." ABSOLUTE)
 set(PCRECOMP "${MP2_ROOT}/external/pcrecomp")
-# Árbol DXVK preparado y port a Android: copia hermana de NFSU2 (solo lectura).
-set(NFSU2_ROOT "${MP2_ROOT}/../nfsu2-androidevolved/nfsu2-recompiled" CACHE PATH "Copia de nfsu2-recompiled")
-set(DXVK_SOURCE "${NFSU2_ROOT}/build/dxvk-source" CACHE PATH "Fuente DXVK nativa preparada")
+# Port de DXVK a Android: copia propia y fija, sacada de la versión confirmada de
+# nfsu2-recompiled, para que los cambios de aquel proyecto no rompan esta compilación.
+set(DXVK_PORT "${MP2_ROOT}/work/pc/dxvk_android/port" CACHE PATH "Port dxvk_android")
+set(DXVK_SOURCE "${MP2_ROOT}/work/pc/dxvk_android/source" CACHE PATH "Fuente DXVK nativa preparada" FORCE)
 set(DXVK_ANDROID_STATIC ON CACHE BOOL "Enlazar dentro de la aplicación" FORCE)
-add_subdirectory("${NFSU2_ROOT}/ports/dxvk_android" "${CMAKE_CURRENT_BINARY_DIR}/dxvk")
+add_subdirectory("${DXVK_PORT}" "${CMAKE_CURRENT_BINARY_DIR}/dxvk")
 
 # Código recompilado: se genera en local desde la instalación del usuario y no se sube.
 set(GEN_DIR "${MP2_ROOT}/work/pc/gen")

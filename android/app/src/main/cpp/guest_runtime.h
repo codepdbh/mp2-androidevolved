@@ -24,6 +24,9 @@ void setGuestMouseButton(unsigned button,bool down);
 void addGuestMouseWheel(int delta);
 // True mientras corre X_MenuModeBase::update: hay un menú en pantalla.
 bool guestMenuActive();
+int guestScreenMode();
+// Archivos que el juego no debe ver, separados por ";" (los .ras de otros idiomas).
+void setGuestHiddenFiles(const char* names);
 // Opciones del launcher para la línea de órdenes del juego; antes de arrancar.
 void setGuestFlags(const char* flags);
 /** Touch as mouse: x/y as a fraction of the game view; phase 0 down, 1 move, 2 up (left button). */

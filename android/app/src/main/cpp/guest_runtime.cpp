@@ -52,6 +52,7 @@ recomp_func_t mp2_override_lookup(uint32_t va);
 extern volatile int mp2_menu_target_pending;
 extern volatile float mp2_menu_target_x, mp2_menu_target_y;
 extern volatile long long mp2_menu_last_ms;
+extern volatile long long mp2_look_last_ms;
 
 uint32_t g_eax, g_ecx, g_edx, g_esp, g_ebx, g_esi, g_edi, g_ebp;
 #ifndef RECOMP_X87_WINDOW
@@ -182,6 +183,7 @@ std::string guestLanguage="Spanish";
 bool guestWidescreen=true;
 constexpr const char* guestRootPath="C:\\mp2";
 std::string guestExtraFlags;
+std::set<std::string> guestHiddenFiles;  // Idioma: el motor carga todos los *.RAS que encuentra.
 std::atomic<bool> stopRequested{false};
 std::atomic<bool> guestPaused{false};
 std::chrono::steady_clock::time_point bootDeadline;
@@ -879,6 +881,20 @@ bool guestMenuActive(){
     struct ::timespec now{};::clock_gettime(CLOCK_MONOTONIC,&now);
     long long ms=(long long)now.tv_sec*1000+now.tv_nsec/1000000;
     return mp2_menu_last_ms&&ms-mp2_menu_last_ms<400;
+}
+// 0 cinemática, novela gráfica o carga; 1 menú; 2 gameplay.
+int guestScreenMode(){
+    if(guestMenuActive())return 1;
+    struct ::timespec now{};::clock_gettime(CLOCK_MONOTONIC,&now);
+    long long ms=(long long)now.tv_sec*1000+now.tv_nsec/1000000;
+    int mode=mp2_look_last_ms&&ms-mp2_look_last_ms<300?2:0;
+    static int logged=-1;if(mode!=logged){logged=mode;NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Pantalla: %s",mode==2?"gameplay":"sin controles");}
+    return mode;
+}
+void setGuestHiddenFiles(const char* names){
+    std::lock_guard<MachineMutex> lock(machine);if(memory||!names)return;
+    std::stringstream list(names);std::string name;
+    while(std::getline(list,name,';'))if(!name.empty())guestHiddenFiles.insert(lower(name));
 }
 void setGuestFlags(const char* flags){std::lock_guard<MachineMutex> lock(machine);if(!memory&&flags)guestExtraFlags=flags;}
 void typeGuestText(const std::vector<uint32_t>& characters){enqueueGuestText(characters);}

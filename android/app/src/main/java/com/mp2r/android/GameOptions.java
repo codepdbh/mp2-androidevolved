@@ -22,6 +22,8 @@ final class GameOptions {
     boolean fastLoad = false;
     float lookSensitivity = 0.45f;
     int hudOpacity = 65;
+    /** es, en, pt: el launcher siempre; el juego, si la instalación trae ese idioma. */
+    String language = "es";
 
     static SharedPreferences preferences(Context context) {
         return context.getSharedPreferences("mp2_opciones", Context.MODE_PRIVATE);
@@ -41,6 +43,7 @@ final class GameOptions {
         o.fastLoad = p.getBoolean("cargaRapida", o.fastLoad);
         o.lookSensitivity = p.getFloat("sensibilidad", o.lookSensitivity);
         o.hudOpacity = p.getInt("opacidad", o.hudOpacity);
+        o.language = p.getString("idioma", o.language);
         return o;
     }
 
@@ -49,7 +52,7 @@ final class GameOptions {
             .putInt("escala", renderScale).putInt("fps", frameLimit).putBoolean("panoramico", widescreen)
             .putFloat("fov", fieldOfView).putBoolean("hudPanoramico", widescreenHud).putInt("bordes", cutsceneBorders)
             .putBoolean("comics", comicsFullscreen).putBoolean("saltarIntro", skipIntro).putBoolean("cargaRapida", fastLoad)
-            .putFloat("sensibilidad", lookSensitivity).putInt("opacidad", hudOpacity).apply();
+            .putFloat("sensibilidad", lookSensitivity).putInt("opacidad", hudOpacity).putString("idioma", language).apply();
     }
 
     /** Opciones de la línea de órdenes del propio juego (medidas en MaxPayne2.exe). */
@@ -58,6 +61,20 @@ final class GameOptions {
         if (skipIntro) flags.append("-skipstartup ");
         if (fastLoad) flags.append("-disable3dpreloads ");
         return flags.toString().trim();
+    }
+
+    /** El motor carga todos los *.RAS de la carpeta: se ocultan los de otros idiomas. */
+    String hiddenLanguageFiles() {
+        StringBuilder hidden = new StringBuilder();
+        if (!language.equals("es")) hidden.append("MP2_Spanish.ras;");
+        if (!language.equals("pt")) hidden.append("MP2_Portuguese.ras;");
+        if (!language.equals("en")) hidden.append("MP2_English.ras;");
+        return hidden.toString();
+    }
+
+    /** Textos de la interfaz. */
+    String tr(String spanish, String english, String portuguese) {
+        return language.equals("en") ? english : language.equals("pt") ? portuguese : spanish;
     }
 
     /** Escribe en el .ini del WidescreenFix de la carpeta del juego solo los valores del launcher. */

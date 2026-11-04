@@ -61,7 +61,7 @@ public final class LauncherActivity extends Activity {
         dataStatus.setPadding(0, dp(10), 0, dp(14));
         left.addView(dataStatus);
         play = new Button(this);
-        play.setText("JUGAR");
+        play.setText(options.tr("JUGAR", "PLAY", "JOGAR"));
         play.setTextColor(Color.WHITE);
         play.setTextSize(18);
         play.setTypeface(Typeface.DEFAULT_BOLD);
@@ -78,28 +78,51 @@ public final class LauncherActivity extends Activity {
         scroll.addView(panel, new FrameLayout.LayoutParams(-1, -2));
         columns.addView(scroll, new LinearLayout.LayoutParams(0, -1, 1.25f));
 
-        section(panel, "Rendimiento");
-        slider(panel, "Resolución", new String[] {"50 %", "67 %", "75 %", "85 %", "100 % (nativa)"}, indexOf(new int[] {50, 67, 75, 85, 100}, options.renderScale),
-            i -> options.renderScale = new int[] {50, 67, 75, 85, 100}[i]);
-        slider(panel, "Límite de FPS", new String[] {"30", "60", "90", "120", "Sin límite"}, indexOf(new int[] {30, 60, 90, 120, 0}, options.frameLimit),
-            i -> options.frameLimit = new int[] {30, 60, 90, 120, 0}[i]);
-        toggle(panel, "Saltar los vídeos de inicio", "Llegas antes al menú.", options.skipIntro, on -> options.skipIntro = on);
-        toggle(panel, "Carga rápida", "Omite la precarga 3D: menos espera al entrar, posibles tirones la primera vez que aparece algo.", options.fastLoad, on -> options.fastLoad = on);
+        section(panel, options.tr("Idioma", "Language", "Idioma"));
+        LinearLayout languages = new LinearLayout(this);
+        String[][] choices = {{"es", "Español"}, {"en", "English"}, {"pt", "Português"}};
+        for (String[] choice : choices) {
+            Button pick = new Button(this);
+            pick.setText(choice[1]);
+            pick.setAllCaps(false);
+            pick.setTextColor(Color.WHITE);
+            pick.setBackground(rounded(choice[0].equals(options.language) ? RED : 0xFF303030));
+            pick.setOnClickListener(v -> { options.language = choice[0]; options.save(this); recreate(); });
+            LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(40), 1f);
+            size.setMargins(dp(3), dp(4), dp(3), dp(4));
+            languages.addView(pick, size);
+        }
+        panel.addView(languages);
+        if (!gameHasLanguage()) panel.addView(text(options.tr("", "This installation has no English data: the game may show its base text.", "Esta instalação não traz português: o jogo mostrará o idioma base."), 12, DIM));
 
-        section(panel, "Pantalla panorámica");
-        toggle(panel, "WidescreenFix", "Sin él, el juego se ve en 4:3 estirado.", options.widescreen, on -> options.widescreen = on);
-        slider(panel, "Campo de visión", percentLabels(80, 140, 5), Math.round((options.fieldOfView - 0.8f) / 0.05f),
+        section(panel, options.tr("Rendimiento", "Performance", "Desempenho"));
+        slider(panel, options.tr("Resolución", "Resolution", "Resolução"), new String[] {"50 %", "67 %", "75 %", "85 %", options.tr("100 % (nativa)", "100 % (native)", "100 % (nativa)")}, indexOf(new int[] {50, 67, 75, 85, 100}, options.renderScale),
+            i -> options.renderScale = new int[] {50, 67, 75, 85, 100}[i]);
+        slider(panel, options.tr("Límite de FPS", "FPS limit", "Limite de FPS"), new String[] {"30", "60", "90", "120", options.tr("Sin límite", "Unlimited", "Sem limite")}, indexOf(new int[] {30, 60, 90, 120, 0}, options.frameLimit),
+            i -> options.frameLimit = new int[] {30, 60, 90, 120, 0}[i]);
+        toggle(panel, options.tr("Saltar los vídeos de inicio", "Skip startup videos", "Pular vídeos de início"), options.tr("Llegas antes al menú.", "Reach the menu sooner.", "Chega ao menu mais rápido."), options.skipIntro, on -> options.skipIntro = on);
+        toggle(panel, options.tr("Carga rápida", "Fast loading", "Carregamento rápido"), options.tr("Omite la precarga 3D: menos espera al entrar, posibles tirones la primera vez que aparece algo.", "Skips 3D preloading: shorter waits, possible stutter the first time something appears.", "Pula o pré-carregamento 3D: menos espera, possíveis travadas na primeira vez que algo aparece."), options.fastLoad, on -> options.fastLoad = on);
+
+        section(panel, options.tr("Pantalla panorámica", "Widescreen", "Tela panorâmica"));
+        toggle(panel, "WidescreenFix", options.tr("Sin él, el juego se ve en 4:3 estirado.", "Without it the game looks stretched from 4:3.", "Sem ele, o jogo fica esticado em 4:3."), options.widescreen, on -> options.widescreen = on);
+        slider(panel, options.tr("Campo de visión", "Field of view", "Campo de visão"), percentLabels(80, 140, 5), Math.round((options.fieldOfView - 0.8f) / 0.05f),
             i -> options.fieldOfView = 0.8f + i * 0.05f);
-        toggle(panel, "HUD en los bordes", "Lleva salud y munición a las esquinas de la pantalla.", options.widescreenHud, on -> options.widescreenHud = on);
-        toggle(panel, "Novela gráfica a pantalla completa", null, options.comicsFullscreen, on -> options.comicsFullscreen = on);
-        slider(panel, "Bandas en cinemáticas", new String[] {"Originales", "Sin bandas", "Según la pantalla"}, options.cutsceneBorders,
+        toggle(panel, options.tr("HUD en los bordes", "HUD at the edges", "HUD nas bordas"), options.tr("Lleva salud y munición a las esquinas de la pantalla.", "Moves health and ammo to the screen corners.", "Leva saúde e munição aos cantos da tela."), options.widescreenHud, on -> options.widescreenHud = on);
+        toggle(panel, options.tr("Novela gráfica a pantalla completa", "Full-screen graphic novel", "Graphic novel em tela cheia"), null, options.comicsFullscreen, on -> options.comicsFullscreen = on);
+        slider(panel, options.tr("Bandas en cinemáticas", "Cutscene bars", "Barras nas cenas"), new String[] {options.tr("Originales", "Original", "Originais"), options.tr("Sin bandas", "None", "Sem barras"), options.tr("Según la pantalla", "Match the screen", "Conforme a tela")}, options.cutsceneBorders,
             i -> options.cutsceneBorders = i);
 
-        section(panel, "Controles táctiles");
-        slider(panel, "Sensibilidad de la mirada", percentLabels(20, 200, 10), Math.round((options.lookSensitivity / 0.45f * 100 - 20) / 10),
+        section(panel, options.tr("Controles táctiles", "Touch controls", "Controles de toque"));
+        slider(panel, options.tr("Sensibilidad de la mirada", "Look sensitivity", "Sensibilidade da mira"), percentLabels(20, 200, 10), Math.round((options.lookSensitivity / 0.45f * 100 - 20) / 10),
             i -> options.lookSensitivity = 0.45f * (20 + i * 10) / 100f);
-        slider(panel, "Opacidad de los botones", percentLabels(20, 100, 5), (options.hudOpacity - 20) / 5,
+        slider(panel, options.tr("Opacidad de los botones", "Button opacity", "Opacidade dos botões"), percentLabels(20, 100, 5), (options.hudOpacity - 20) / 5,
             i -> options.hudOpacity = 20 + i * 5);
+
+        Button editor = new Button(this);
+        editor.setText(options.tr("Mover y cambiar tamaño de los botones", "Move and resize the buttons", "Mover e redimensionar os botões"));
+        editor.setAllCaps(false);
+        editor.setOnClickListener(v -> { options.save(this); startActivity(new Intent(this, ControlsEditorActivity.class)); });
+        panel.addView(editor);
 
         setContentView(root);
     }
@@ -110,12 +133,18 @@ public final class LauncherActivity extends Activity {
         refreshData();
     }
 
+    private boolean gameHasLanguage() {
+        File root = new File(Environment.getExternalStorageDirectory(), "mp2");
+        if (options.language.equals("es")) return true;
+        return new File(root, options.language.equals("en") ? "MP2_English.ras" : "MP2_Portuguese.ras").exists();
+    }
+
     private boolean hasPermission() { return Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager(); }
 
     private void refreshData() {
-        if (!hasPermission()) { dataStatus.setText("Falta el permiso de archivos: pulsa JUGAR para concederlo."); return; }
+        if (!hasPermission()) { dataStatus.setText(options.tr("Falta el permiso de archivos: pulsa JUGAR para concederlo.", "File permission missing: press PLAY to grant it.", "Falta a permissão de arquivos: toque em JOGAR para conceder.")); return; }
         File exe = new File(Environment.getExternalStorageDirectory(), "mp2/MaxPayne2.exe");
-        dataStatus.setText(exe.exists() ? "Datos del juego: Memoria interna/mp2" : "No encuentro Memoria interna/mp2/MaxPayne2.exe. Copia ahí tu instalación.");
+        dataStatus.setText(exe.exists() ? options.tr("Datos del juego: Memoria interna/mp2", "Game data: Internal storage/mp2", "Dados do jogo: Armazenamento interno/mp2") : options.tr("No encuentro Memoria interna/mp2/MaxPayne2.exe. Copia ahí tu instalación.", "Internal storage/mp2/MaxPayne2.exe not found. Copy your installation there.", "Não encontrei Armazenamento interno/mp2/MaxPayne2.exe. Copie sua instalação para lá."));
         play.setEnabled(exe.exists());
     }
 

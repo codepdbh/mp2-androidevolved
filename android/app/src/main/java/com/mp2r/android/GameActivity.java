@@ -26,7 +26,9 @@ public final class GameActivity extends NativeActivity {
     static native void nativeMouseButton(int button, boolean down);
     static native void nativeMouseWheel(int delta);
     static native void nativePointer(float x, float y, int phase);
-    static native boolean nativeMenuActive();
+    static native int nativeScreenMode();
+    static native void nativeHudEditing(boolean editing);
+    private static native void nativeHiddenFiles(String names);
     private static native void nativeFlags(String flags);
     private static native void nativeRenderScale(int percent);
     private static native void nativeFrameLimit(int cap);
@@ -41,6 +43,7 @@ public final class GameActivity extends NativeActivity {
         // Antes de super.onCreate: el hilo nativo arranca el juego con estos valores.
         GameOptions options = GameOptions.load(this);
         nativeFlags(options.gameFlags());
+        nativeHiddenFiles(options.hiddenLanguageFiles());
         nativeRenderScale(options.renderScale);
         nativeFrameLimit(options.frameLimit);
         nativeWidescreen(options.widescreen);

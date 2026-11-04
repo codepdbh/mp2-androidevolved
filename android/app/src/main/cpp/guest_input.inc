@@ -482,7 +482,7 @@ void inputDispatch(){
             items.push_back({offset,type,bytes});}
         object.size=size;object.format=std::move(items);ret(0,2);return;}
     case 12:ret(0,2);return;  // SetEventNotification: el juego sondea; el evento nunca se señala.
-    case 13:{uint32_t flags=arg(2);if(!windows.count(arg(1))){ret(diInvalid,3);return;}
+    case 13:{uint32_t flags=arg(2);
         // El teléfono solo tiene un dueño de la entrada: cualquier nivel es válido.
         object.cooperative=flags?flags:10;ret(0,3);return;}
     case 15:{uint32_t output=arg(1);if(!output||(read32(output)!=580&&read32(output)!=560)){ret(diInvalid,2);return;}inputDeviceInstance(output,kind,read32(output));ret(0,2);return;}

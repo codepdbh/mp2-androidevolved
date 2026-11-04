@@ -122,7 +122,7 @@ bool soundFormat(uint32_t address,PcmVoice& voice){
 void directSoundCreate(){
     if(!arg(1)){ret(0x80004003,3);return;}write32(arg(1),0);
     if(arg(2)){ret(0x80040110,3);return;}
-    if(arg(0)){ret(0x88780078,3);return;} // Only the default playback device is exposed.
+    // Un solo dispositivo real: vale el GUID nulo o el que dio DirectSoundEnumerate.
     if(!startSoundStream()){ret(0x88780078,3);return;}
     write32(arg(1),createSoundObject(1));ret(0,3);
 }
@@ -227,7 +227,9 @@ void soundDispatch(){
             uint32_t duplicate=createSoundObject(2,original->second.flags);auto& created=soundObjects.at(duplicate);created.voice=voice;
             uint32_t bytes=uint32_t(voice->samples.size());created.guestSamples=allocate(bytes);
             std::memcpy(ptr(created.guestSamples,bytes),voice->samples.data(),bytes);write32(output,duplicate);ret(0,3);return;}
-        case 6:if(!windows.count(arg(1))||arg(2)<1||arg(2)>4){ret(0x80070057,3);return;}ret(0,3);return;
+        // Cualquier HWND vale, como en Windows: sndmfc lo prueba con el del escritorio y, si
+        // falla, da el dispositivo por inservible y el juego se queda sin sonido.
+        case 6:if(arg(2)<1||arg(2)>4){ret(0x80070057,3);return;}ret(0,3);return;
         case 7:ret(0,1);return;  // Compact
         case 9:ret(0,2);return;  // SetSpeakerConfig
         case 10:ret(0,2);return; // Initialize

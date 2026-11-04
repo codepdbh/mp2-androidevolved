@@ -13,6 +13,7 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity android:name=".ControlsEditorActivity" android:exported="false" android:screenOrientation="sensorLandscape"/>
         <!-- Proceso propio: el juego recompilado no se puede reiniciar dentro del mismo proceso. -->
         <activity android:name=".GameActivity" android:exported="true" android:process=":game"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"

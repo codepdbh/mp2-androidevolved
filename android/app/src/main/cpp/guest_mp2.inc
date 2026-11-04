@@ -113,10 +113,16 @@ void directInputCreateA(){  // (hinst, versión, salida, outer)
     if(arg(3)){ret(0x80040110,4);return;}
     write32(output,createInputObject(1));ret(0,4);
 }
-void directSoundEnumerateA(){  // Un único dispositivo, el predeterminado, como lo enumera Windows.
-    uint32_t description=ansiString("Android AAudio"),module=ansiString("");
-    callGuest(arg(0),{0,description,module,arg(1)});
-    heaps->free(GuestHeaps::process,description);heaps->free(GuestHeaps::process,module);ret(0,2);
+// Como en Windows: el controlador primario sin GUID y el dispositivo real con GUID. sndmfc
+// descarta las entradas sin GUID; sin la segunda elige su "Null Audio Device" y todo calla.
+void directSoundEnumerateA(){
+    static uint32_t deviceGuid=0;
+    if(!deviceGuid){deviceGuid=allocate(16);static const uint8_t guid[16]={0x4d,0x50,0x32,0x41,0x55,0x44,0x49,0x4f,0xaa,0xaa,0x41,0x41,0x55,0x44,0x49,0x4f};std::memcpy(ptr(deviceGuid,16),guid,16);}
+    uint32_t primary=ansiString("Primary Sound Driver"),description=ansiString("Android AAudio"),module=ansiString("aaudio.dll"),empty=ansiString("");
+    uint32_t callback=arg(0),context=arg(1);
+    if(callGuest(callback,{0,primary,empty,context}))callGuest(callback,{deviceGuid,description,module,context});
+    for(uint32_t text:{primary,description,module,empty})heaps->free(GuestHeaps::process,text);
+    ret(0,2);
 }
 // ---- GDI: solo consultas de capacidades, sin dibujo ----
 constexpr uint32_t guestDeviceContext=0xf0071000u;
