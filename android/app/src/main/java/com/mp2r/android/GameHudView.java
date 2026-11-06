@@ -5,6 +5,11 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.hardware.input.InputManager;
+import android.view.HapticFeedbackConstants;
+import android.view.InputDevice;
 import android.graphics.RectF;
 import android.util.SparseArray;
 import android.view.MotionEvent;
@@ -42,6 +47,38 @@ final class GameHudView extends View {
     private boolean stickActive, forward, back, left, right;
 
     private final float lookSensitivity;
+    /** Puntería fina: mientras se mantiene el botón de apuntar, la mirada va más lenta. */
+    private static final float PRECISION_FACTOR = 0.35f;
+    private Button aim;
+    private final Paint glowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final PorterDuffColorFilter pressedTint = new PorterDuffColorFilter(0xFFFFD27A, PorterDuff.Mode.SRC_ATOP);
+    /** Con un mando conectado y en uso, los controles táctiles se ocultan. */
+    private boolean gamepadActive;
+    private InputManager inputManager;
+    private final InputManager.InputDeviceListener deviceListener = new InputManager.InputDeviceListener() {
+        @Override public void onInputDeviceAdded(int id) { refreshGamepads(); }
+        @Override public void onInputDeviceRemoved(int id) { refreshGamepads(); }
+        @Override public void onInputDeviceChanged(int id) { refreshGamepads(); }
+    };
+    private static boolean isGamepad(InputDevice device) {
+        if (device == null || device.isVirtual()) return false;
+        int sources = device.getSources();
+        return (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
+            || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+    }
+    private void refreshGamepads() {
+        boolean any = false;
+        for (int id : InputDevice.getDeviceIds()) any |= isGamepad(InputDevice.getDevice(id));
+        if (!any && gamepadActive) { gamepadActive = false; invalidate(); }
+        if (any && !gamepadActive && hasGamepadInput) { gamepadActive = true; releaseAll(); invalidate(); }
+        gamepadConnected = any;
+    }
+    private boolean gamepadConnected, hasGamepadInput;
+    private void releaseAll() {
+        for (Button b : buttons) if (b.down) press(b, false);
+        updateStick(stickCenterX, stickCenterY);
+        touches.clear();
+    }
     private final int idleAlpha;
     /** El juego dice si hay un menú en pantalla: el modo cambia solo. */
     private final Runnable pollMode = new Runnable() {
@@ -49,12 +86,27 @@ final class GameHudView extends View {
             if (!editing) {
                 boolean menu = GameActivity.nativeScreenMode() != 2;
                 if (menu != menuMode) { setMenuMode(menu); invalidate(); }
+                // El mando se usó: fuera los botones táctiles hasta que se vuelva a tocar la pantalla.
+                if (GameActivity.nativeGamepadUsed() && gamepadConnected && !gamepadActive) {
+                    hasGamepadInput = true; gamepadActive = true; releaseAll(); invalidate();
+                }
             }
             postDelayed(this, 200);
         }
     };
-    @Override protected void onAttachedToWindow() { super.onAttachedToWindow(); if (!editorOnly) post(pollMode); }
-    @Override protected void onDetachedFromWindow() { removeCallbacks(pollMode); super.onDetachedFromWindow(); }
+    @Override protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (editorOnly) return;
+        post(pollMode);
+        inputManager = (InputManager) getContext().getSystemService(Context.INPUT_SERVICE);
+        inputManager.registerInputDeviceListener(deviceListener, null);
+        refreshGamepads();
+    }
+    @Override protected void onDetachedFromWindow() {
+        removeCallbacks(pollMode);
+        if (inputManager != null) inputManager.unregisterInputDeviceListener(deviceListener);
+        super.onDetachedFromWindow();
+    }
 
     GameHudView(Context context, GameOptions options) {
         super(context);
@@ -63,18 +115,20 @@ final class GameHudView extends View {
         idleAlpha = options.hudOpacity * 255 / 100;
         setBackgroundColor(0);
         stickPaint.setColor(0xFFFFFFFF);
+        glowPaint.setStyle(Paint.Style.FILL);
         textPaint.setColor(0xFFFFFFFF);
         textPaint.setTextAlign(Paint.Align.CENTER);
         // Posición en fracción del alto desde abajo a la derecha, y tamaño en fracción del alto.
         buttons.add(new Button("fire", icon(R.drawable.hud_fire), 0.20f, 0.24f, 0.26f, 0, 0, 0));
-        buttons.add(new Button("aim", icon(R.drawable.hud_aim), 0.48f, 0.15f, 0.17f, 0x10, -1, 0));          // SNIPERZOOM: Q
+        aim = new Button("aim", icon(R.drawable.hud_aim), 0.48f, 0.15f, 0.17f, 0x10, -1, 0);                  // SNIPERZOOM: Q + puntería fina
+        buttons.add(aim);
         buttons.add(new Button("bullet_time", icon(R.drawable.hud_bullet_time), 0.46f, 0.38f, 0.19f, 0, 1, 0));      // SLOWMOTION: ratón 1
         buttons.add(new Button("shootdodge", icon(R.drawable.hud_shootdodge), 0.25f, 0.55f, 0.19f, 0x2A, -1, 0));   // DODGEMODIFIER: Mayús izq.
         buttons.add(new Button("jump", icon(R.drawable.hud_jump), 0.70f, 0.20f, 0.17f, 0x39, -1, 0));         // JUMP: Espacio
         buttons.add(new Button("reload", icon(R.drawable.hud_reload), 0.70f, 0.42f, 0.15f, 0x13, -1, 0));       // RELOAD: R
         buttons.add(new Button("interact", icon(R.drawable.hud_interact), 0.47f, 0.60f, 0.15f, 0x12, -1, 0));     // USE: E
         buttons.add(new Button("painkiller", icon(R.drawable.hud_painkiller), 0.70f, 0.62f, 0.14f, 0x0F, -1, 0));   // PAINKILLER: Tab
-        buttons.add(new Button("weapons", icon(R.drawable.hud_weapons), 0.92f, 0.14f, 0.15f, 0, -1, 1));         // NEXT: rueda
+        buttons.add(new Button("weapons", icon(R.drawable.hud_weapons), 0.92f, 0.14f, 0.15f, 0x1A, -1, 0));      // NEXT: [ (la rueda no cambiaba de arma)
         pause = new Button("pause", icon(R.drawable.hud_pause), 0.10f, 0.90f, 0.12f, 0x01, -1, 0);             // Esc
         buttons.add(pause);
         stick = new Button("stick", null, 0, 0, 0.32f, 0, -1, 0);
@@ -107,6 +161,7 @@ final class GameHudView extends View {
         stickPaint.setAlpha(alpha);
         canvas.drawRoundRect(chip, 14, 14, stickPaint);
         stickPaint.setColor(0xFFFFFFFF);
+        glowPaint.setStyle(Paint.Style.FILL);
         canvas.drawText(label, chip.centerX(), chip.centerY() + textPaint.getTextSize() / 3, textPaint);
     }
     void setSelectedSize(float size) {
@@ -216,6 +271,7 @@ final class GameHudView extends View {
     }
 
     @Override protected void onDraw(Canvas canvas) {
+        if (gamepadActive && !editing) return;  // Con mando no se dibuja nada.
         // Fuera del gameplay solo queda Pausa (Esc): es lo que salta cinemáticas y novela gráfica.
         if (menuMode && !editing) { draw(canvas, pause); return; }
         stickPaint.setStyle(Paint.Style.STROKE);
@@ -245,17 +301,29 @@ final class GameHudView extends View {
     }
 
     private void draw(Canvas canvas, Button b) {
-        iconPaint.setAlpha(b.down ? 255 : idleAlpha);
-        RectF rect = b.rect;
-        if (b.down) {
-            rect = new RectF(b.rect);
-            rect.inset(b.rect.width() * 0.05f, b.rect.height() * 0.05f);
+        if (!b.down) {
+            iconPaint.setAlpha(idleAlpha);
+            iconPaint.setColorFilter(null);
+            canvas.drawBitmap(b.icon, null, b.rect, iconPaint);
+            return;
         }
+        // Pulsado: halo detrás, icono más grande, opaco y teñido. Solo alfa, tinte y escala sobre el icono original.
+        float cx = b.rect.centerX(), cy = b.rect.centerY(), radius = b.rect.width() * 0.62f;
+        glowPaint.setShader(new android.graphics.RadialGradient(cx, cy, radius, 0x99FFC04D, 0x00FFC04D, android.graphics.Shader.TileMode.CLAMP));
+        canvas.drawCircle(cx, cy, radius, glowPaint);
+        RectF rect = new RectF(b.rect);
+        float grow = b.rect.width() * 0.08f;
+        rect.inset(-grow, -grow);
+        iconPaint.setAlpha(255);
+        iconPaint.setColorFilter(pressedTint);
         canvas.drawBitmap(b.icon, null, rect, iconPaint);
+        iconPaint.setColorFilter(null);
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
         if (editing) return editTouch(event);
+        // Tocar la pantalla con el mando conectado vuelve a mostrar los controles táctiles.
+        if (gamepadActive && event.getActionMasked() == MotionEvent.ACTION_DOWN) { gamepadActive = false; invalidate(); }
         int action = event.getActionMasked(), index = event.getActionIndex();
         switch (action) {
             case MotionEvent.ACTION_DOWN: case MotionEvent.ACTION_POINTER_DOWN:
@@ -301,7 +369,7 @@ final class GameHudView extends View {
         Touch touch = touches.get(id);
         if (touch == null) return;
         if (touch.role == ROLE_STICK) updateStick(x, y);
-        else if (touch.role == ROLE_LOOK) GameActivity.nativeMouseMotion((x - touch.lastX) * lookSensitivity, (y - touch.lastY) * lookSensitivity);
+        else if (touch.role == ROLE_LOOK) GameActivity.nativeMouseMotion((x - touch.lastX) * lookSensitivity * (aim.down ? PRECISION_FACTOR : 1f), (y - touch.lastY) * lookSensitivity * (aim.down ? PRECISION_FACTOR : 1f));
         else if (touch.role == ROLE_MENU) GameActivity.nativePointer(x / getWidth(), y / getHeight(), 1);
         touch.lastX = x; touch.lastY = y;
     }
@@ -329,6 +397,7 @@ final class GameHudView extends View {
     private void press(Button b, boolean down) {
         if (b.down == down) return;
         b.down = down;
+        if (down) performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
         if (b.wheel != 0) { if (down) GameActivity.nativeMouseWheel(b.wheel * 120); return; }
         if (b.mouse >= 0) GameActivity.nativeMouseButton(b.mouse, down);
         else GameActivity.nativeKey(b.key, down);

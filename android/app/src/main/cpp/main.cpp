@@ -20,7 +20,7 @@
 #include "guest_runtime.h"
 #include "d3d8_bridge.h"
 #include "guest_boot_worker.h"
-#include "gamepad_input.h"
+#include "pad_mapper.h"
 #include "vulkan_driver.h"
 
 static void showStatus(android_app* app, const char* message) {
@@ -237,56 +237,22 @@ struct Host {
     std::string guestStatus;
     GuestBootWorker guestWorker;
 };
-static GamepadInput gamepad;
-// Device ids the Java side accepted as real gamepads (updateGamepads). Events
-// from anything else never reach the pad: several MediaTek phones expose
-// sensors and side keys as joysticks whose X axis rests off centre.
-static std::mutex gamepadDevicesMutex;
-static std::vector<int32_t> gamepadDevices;
-static std::atomic<bool> gamepadsRemoved{false};
-static bool acceptedGamepad(const AInputEvent* event){
-    std::lock_guard<std::mutex> lock(gamepadDevicesMutex);
-    return std::find(gamepadDevices.begin(),gamepadDevices.end(),AInputEvent_getDeviceId(event))!=gamepadDevices.end();
-}
-static void setPadKey(unsigned scan,bool down){setGuestKey(scan,down);}
-static void publishPad(){
-    auto state=gamepad.padState();
-    // Z: LT pushes it one way and RT the other, as DirectInput shows an Xbox pad.
-    const float axes[6]={state.leftX,state.leftY,state.leftTrigger-state.rightTrigger,state.rightX,state.rightY,0.f};
-    setGuestPad(axes,state.buttons,state.hatX,state.hatY);
-}
+static PadMapper pad;
 static void onCommand(android_app* app, int32_t command) {
     auto& h = *static_cast<Host*>(app->userData);
     if (command == APP_CMD_RESUME) { h.resumed = true; h.failed = false; }
-    if (command == APP_CMD_PAUSE) { setGuestPaused(true);gamepad.releaseAll(setPadKey);clearGuestInput();h.resumed = false; h.renderer.stop();acknowledgeD3D8Surface(false);setD3D8HostWindow(nullptr); }
+    if (command == APP_CMD_PAUSE) { setGuestPaused(true);pad.releaseAll();clearGuestInput();h.resumed = false; h.renderer.stop();acknowledgeD3D8Surface(false);setD3D8HostWindow(nullptr); }
     if (command == APP_CMD_TERM_WINDOW || command == APP_CMD_WINDOW_RESIZED || command == APP_CMD_INIT_WINDOW) {
         setGuestPaused(true);h.renderer.stop(); h.failed = false;
         acknowledgeD3D8Surface(false);setD3D8HostWindow(nullptr);
     }
 }
-// Set when the player actually uses the pad (a button, a stick past half way,
-// a trigger), so the touch controls can hide again after a touch revealed
-// them; GameActivity polls it with the driving-mode check.
-static std::atomic<bool> gamepadUsed{false};
-static void notePadUse(const AInputEvent* event){
-    if(AInputEvent_getType(event)==AINPUT_EVENT_TYPE_KEY){if(AKeyEvent_getAction(event)==AKEY_EVENT_ACTION_DOWN)gamepadUsed=true;return;}
-    for(int32_t axis:{AMOTION_EVENT_AXIS_X,AMOTION_EVENT_AXIS_Y,AMOTION_EVENT_AXIS_Z,AMOTION_EVENT_AXIS_RZ,AMOTION_EVENT_AXIS_HAT_X,AMOTION_EVENT_AXIS_HAT_Y})
-        if(std::fabs(AMotionEvent_getAxisValue(event,axis,0))>.5f){gamepadUsed=true;return;}
-    for(int32_t axis:{AMOTION_EVENT_AXIS_LTRIGGER,AMOTION_EVENT_AXIS_RTRIGGER,AMOTION_EVENT_AXIS_BRAKE,AMOTION_EVENT_AXIS_GAS})
-        if(AMotionEvent_getAxisValue(event,axis,0)>.3f){gamepadUsed=true;return;}
-}
-extern "C" JNIEXPORT jboolean JNICALL Java_com_mp2r_android_GameActivity_nativeGamepadUsed(JNIEnv*,jclass){return gamepadUsed.exchange(false)?JNI_TRUE:JNI_FALSE;}
+extern "C" JNIEXPORT jboolean JNICALL Java_com_mp2r_android_GameActivity_nativeGamepadUsed(JNIEnv*,jclass){return pad.used.exchange(false)?JNI_TRUE:JNI_FALSE;}
 static int32_t onInput(android_app*,AInputEvent* event){
     int32_t type=AInputEvent_getType(event);
-    gamepad.setKeyEmulation(!guestGamepadInUse());
-    if(type==AINPUT_EVENT_TYPE_MOTION){
-        if(!acceptedGamepad(event))return 0;
-        bool handled=gamepad.motion(event,guestDrivingControls(),setPadKey);if(handled){notePadUse(event);publishPad();}return handled?1:0;
-    }
+    if(type==AINPUT_EVENT_TYPE_MOTION)return pad.motion(event)?1:0;
     if(type!=AINPUT_EVENT_TYPE_KEY)return 0;
-    // Any key of an accepted pad, whatever source it reports (pads in keyboard
-    // mode send KEYBOARD); keys it does not map fall through to the table below.
-    if(acceptedGamepad(event)&&gamepad.key(event,guestDrivingControls(),setPadKey)){notePadUse(event);publishPad();return 1;}
+    if(pad.key(event))return 1;
     int32_t key=AKeyEvent_getKeyCode(event);unsigned scan=0;
     switch(key){
     case AKEYCODE_DPAD_UP:scan=0xc8;break;case AKEYCODE_DPAD_DOWN:scan=0xd0;break;
@@ -309,7 +275,6 @@ static int32_t onInput(android_app*,AInputEvent* event){
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeKey(JNIEnv*,jclass,jint scan,jboolean down){
     setGuestKey(unsigned(scan),down==JNI_TRUE);
 }
-extern "C" JNIEXPORT jboolean JNICALL Java_com_mp2r_android_GameActivity_nativeDrivingControls(JNIEnv*,jclass){return guestDrivingControls()?JNI_TRUE:JNI_FALSE;}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativePointer(JNIEnv*,jclass,jfloat x,jfloat y,jint phase){
     setGuestPointer(x,y,phase);
 }
@@ -326,15 +291,6 @@ extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeTypeT
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeResolution(JNIEnv*,jclass,jint width,jint height){setGuestResolution(unsigned(width),unsigned(height));}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeGraphicsQuality(JNIEnv*,jclass,jint level){setGuestGraphicsQuality(unsigned(level));}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeFrameLimit(JNIEnv*,jclass,jint cap){setGuestFrameLimit(unsigned(cap));}
-extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeGamepadConnected(JNIEnv*,jclass,jboolean connected){setGuestPadConnected(connected==JNI_TRUE);}
-extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeGamepadDevices(JNIEnv* env,jclass,jintArray ids){
-    std::vector<int32_t> devices;
-    if(ids){jsize count=env->GetArrayLength(ids);devices.resize(size_t(count));if(count)env->GetIntArrayRegion(ids,0,count,devices.data());}
-    std::lock_guard<std::mutex> lock(gamepadDevicesMutex);
-    if(devices!=gamepadDevices)__android_log_print(ANDROID_LOG_INFO,"NFSC","Accepted gamepads: %zu device(s)",devices.size());
-    if(devices.size()<gamepadDevices.size())gamepadsRemoved=true;
-    gamepadDevices=std::move(devices);
-}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeWidescreen(JNIEnv*,jclass,jboolean enabled){setGuestWidescreen(enabled==JNI_TRUE);}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeBackBuffers(JNIEnv*,jclass,jint count){setD3D8Compatibility(unsigned(count));}
 extern "C" JNIEXPORT void JNICALL Java_com_mp2r_android_GameActivity_nativeMouseMotion(JNIEnv*,jclass,jfloat dx,jfloat dy){addGuestMouseMotion(dx,dy);}
@@ -385,8 +341,7 @@ void android_main(android_app* app) {
         const bool active = host.resumed && app->window && !host.failed;
         int id = ALooper_pollOnce(active ? (d3d8RequestsSurface()?16:0) : -1, nullptr, &events, reinterpret_cast<void**>(&source));
         if (id >= 0 && source) source->process(app, source);
-        if(gamepadsRemoved.exchange(false)){gamepad.releaseAll(setPadKey);publishPad();}
-        gamepad.setKeyEmulation(!guestGamepadInUse());gamepad.refresh(guestDrivingControls(),setPadKey);
+        pad.update();
         if (app->destroyRequested) break;
         if (!host.resumed || !app->window || host.failed) continue;
         try {

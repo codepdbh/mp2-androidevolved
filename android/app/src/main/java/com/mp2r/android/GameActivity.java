@@ -27,6 +27,7 @@ public final class GameActivity extends NativeActivity {
     static native void nativeMouseWheel(int delta);
     static native void nativePointer(float x, float y, int phase);
     static native int nativeScreenMode();
+    static native boolean nativeGamepadUsed();
     static native void nativeHudEditing(boolean editing);
     private static native void nativeHiddenFiles(String names);
     private static native void nativeFlags(String flags);
