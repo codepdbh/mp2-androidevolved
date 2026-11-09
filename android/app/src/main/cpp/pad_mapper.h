@@ -118,7 +118,7 @@ private:
     static unsigned mapButton(int32_t code, bool gameplay) {
         if (!gameplay) {
             switch (code) {
-            case AKEYCODE_BUTTON_A: return kMouse + 0;  // Clic: menús, novela gráfica
+            case AKEYCODE_BUTTON_A: return kMouse + 0;  // Clic: menús y botones de la novela gráfica
             case AKEYCODE_BUTTON_B: case AKEYCODE_BUTTON_START: case AKEYCODE_BUTTON_SELECT: case AKEYCODE_BACK: return kEscape;
             case AKEYCODE_DPAD_UP: return kUp;
             case AKEYCODE_DPAD_DOWN: return kDown;

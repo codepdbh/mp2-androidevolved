@@ -37,6 +37,14 @@ void recordInputWheel(int delta){
     uint32_t time=uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     inputMouseEvents.push_back({++inputSequence,8,uint32_t(delta),time});if(inputMouseEvents.size()>1024)inputMouseEvents.pop_front();
 }
+// Entrega los clics táctiles en cola, uno por cada intervalo de espera, después de que el
+// cursor se haya colocado. Lo llaman la lectura del estado y la del búfer del ratón, para
+// que el clic llegue sea cual sea la que haga primero el juego. Con inputMutex tomado.
+void recordInputMouse(unsigned button,bool down);
+void pumpTouchButtons(){
+        if(touchMoved){touchMoved=false;touchSettleMs=steadyMs();}
+        else if(!touchButtons.empty()&&steadyMs()-touchSettleMs>=touchHoldMs){bool down=touchButtons.front();inputMouseButtons[0]=down?0x80:0;recordInputMouse(0,down);touchButtons.pop_front();touchSettleMs=steadyMs();}
+}
 struct InputObject {
     uint32_t kind,table,references=1,size=0,cooperative=0,bufferSize=0;
     bool acquired=false;
@@ -429,8 +437,7 @@ void inputDispatch(){
         if(kind==3){
             // El cursor del menú se coloca directamente (mp2_overrides.c); el clic espera
             // a que update() lo haya aplicado.
-            if(touchMoved){touchMoved=false;touchSettleMs=steadyMs();}
-            else if(!touchButtons.empty()&&steadyMs()-touchSettleMs>=touchHoldMs){bool down=touchButtons.front();inputMouseButtons[0]=down?0x80:0;recordInputMouse(0,down);touchButtons.pop_front();touchSettleMs=steadyMs();}
+            pumpTouchButtons();
         }
         for(auto item:object.format){uint32_t index=(item.type>>8)&0xffff,category=item.type&0xff;
             if(kind==2){uint8_t state=inputKeys[index]|(gameSnapshot?inputKeysUnseen[index]:0);if(item.bytes==4)write32(arg(2)+item.offset,state);else *static_cast<uint8_t*>(ptr(arg(2)+item.offset,1))=state;}
@@ -446,6 +453,7 @@ void inputDispatch(){
         std::lock_guard<std::mutex> lock(inputMutex);
         if(kind==3){
             // Los botones y la rueda llegan por el búfer (X_InputDeviceMouse); los ejes, por el estado.
+            pumpTouchButtons();
             for(auto event:inputMouseEvents){if(event.sequence<=object.sequence)continue;
                 if(object.pending.size()>=object.bufferSize){object.pending.pop_front();object.overflow=true;}
                 object.pending.push_back({event.scan,event.data,event.time,uint32_t(event.sequence),UINT32_MAX});}

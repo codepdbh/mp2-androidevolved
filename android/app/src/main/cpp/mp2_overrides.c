@@ -35,6 +35,22 @@ static void menu_update(void) {
     sub_00C15F00();
 }
 
+/* ---- Novela gráfica: MP_GraphicNovelMode::update(float) lleva su propio cursor en
+ * [objeto+0x107]+0x1A0/+0x1A4 (640x480, igual que los menús) y solo lo mueve con el ratón
+ * relativo; luego mira isPressed(0) sobre esa posición para los botones de abajo. El toque
+ * lo coloca en el dedo antes de que el juego lo lea. ---- */
+void sub_00484AE0(void);
+static void novel_update(void) {
+    if (mp2_menu_target_pending) {
+        mp2_menu_target_pending = 0;
+        uint32_t state = *(uint32_t*)ADDR(g_ecx + 0x107);
+        float x = mp2_menu_target_x, y = mp2_menu_target_y;
+        memcpy((void*)ADDR(state + 0x1A0), &x, 4);
+        memcpy((void*)ADDR(state + 0x1A4), &y, 4);
+    }
+    sub_00484AE0();
+}
+
 /* X_InputDeviceMouse::getPositionRelative: solo la pide quien mueve la cámara del jugador;
  * los menús usan la variante NoInvert. Es la señal de "se está jugando". */
 void sub_00A56B50(void);
@@ -52,6 +68,7 @@ mp2_override_fn mp2_override_lookup(uint32_t va) {
     switch (va) {
     case 0x00A56B50u: return mouse_relative;
     case 0x00C15F00u: return menu_update;
+    case 0x00484AE0u: return novel_update;
     default: return 0;
     }
 }
