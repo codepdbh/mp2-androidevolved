@@ -11,7 +11,8 @@
 
 > [!IMPORTANT]
 > **This repository does not include the game.** You need your own copy of the PC version. It contains no
-> executables, DLLs, `.ras` archives, videos, audio or recompiled code, and neither does the APK.
+> PC game executables, DLLs, `.ras` archives, videos, audio or recompiled game code. The APK includes
+> recompiled code linked into the native runtime, but does not include the game data files.
 
 ## What it is
 
@@ -26,6 +27,14 @@ x86 PC game → PCRecomp → C → custom Win32 runtime → Android NDK ARM64 �
 - **Graphics:** Direct3D 8 → DXVK's D3D8 frontend → DXVK-native D3D9 → Vulkan.
 - **Sound:** DirectSound → custom mixer → AAudio.
 - **Widescreen:** ThirteenAG's WidescreenFix runs recompiled, just as it does on PC.
+
+## Download
+
+**[Download the 0.20-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.20-pc/MaxPayne2-AndroidEvolved-0.20-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.20-pc)
+
+First experimental prerelease, with a signed Release APK. Its signature, version and package alignment
+were verified; this Release build has not yet been tested on a device. The gameplay results below
+come from earlier development builds.
 
 ## Status
 
@@ -61,8 +70,11 @@ Technical details are in [docs/PROGRESS.md](docs/PROGRESS.md) and blockers in [d
    ```
    adb push "Max Payne 2 The Fall of Max Payne/." /storage/emulated/0/mp2/
    ```
-2. Install the APK. For now you have to build it: the project does not publish releases.
+2. Download and install the [signed 0.20-pc APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.20-pc/MaxPayne2-AndroidEvolved-0.20-pc-arm64-v8a.apk).
 3. Open the app, grant the file permission and tap **PLAY**.
+
+If Android rejects the update because an installed development APK uses a different signature, preserve your
+data and uninstall that APK before installing the release. The release includes `SHA256SUMS.txt` to verify the download.
 
 ## Touch controls
 
@@ -130,6 +142,7 @@ The first ARM64 build took about 13 minutes on a 16-core machine with 8 parallel
 - [ ] Long sessions: temperature, battery, memory and stability.
 
 **Launcher and controls**
+- [ ] Physical gamepad: implemented; its actions still need on-device validation.
 - [ ] Controls editor, in the launcher and during play.
 - [ ] Language switching. English hides `MP2_Spanish.ras` and should show the base language; unconfirmed.
 - [ ] Resolution, FPS limit, field of view and widescreen options.
@@ -143,7 +156,6 @@ The first ARM64 build took about 13 minutes on a 16-core machine with 8 parallel
 ## Still to implement
 
 **Controls**
-- [ ] **Physical gamepad:** the native code exists but still has to be connected from Java.
 - [ ] Touch buttons for crouching, melee, previous weapon and direct weapon selection.
 - [ ] On-screen keyboard for in-game text entry, if the game asks for it.
 - [ ] Action remapping and control profiles.
@@ -156,7 +168,7 @@ The first ARM64 build took about 13 minutes on a 16-core machine with 8 parallel
 - [ ] Portuguese in-game: needs language data this copy does not include. The launcher is translated.
 
 **App and distribution**
-- [ ] Publish a signed APK and releases.
+- [x] Publish a signed APK: [0.20-pc experimental prerelease](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.20-pc).
 - [ ] A wizard to copy the game and check its version, with clear error messages.
 - [ ] Game folder picker; the path is currently fixed.
 - [ ] Custom Vulkan drivers, disabled in this build.
