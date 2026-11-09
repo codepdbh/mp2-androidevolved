@@ -36,6 +36,15 @@ First experimental prerelease, with a signed Release APK. Its signature, version
 were verified; this Release build has not yet been tested on a device. The gameplay results below
 come from earlier development builds.
 
+### ARM32: fully experimental
+
+[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.20-pc/MaxPayne2-AndroidEvolved-0.20-pc-armeabi-v7a-experimental.apk).
+**It may fail to start or crash while loading. It has not been tested on a device.**
+Requires Android 10 or later, support for `armeabi-v7a` apps and a 32-bit Vulkan driver compatible with Vulkan 1.1.
+Some ARM64 phones cannot run ARM32 apps. The guest address space is limited to 1 GB;
+this is not a confirmed option for older phones.
+It uses the same package and signing key as ARM64: preserve your data before switching variants.
+
 ## Status
 
 **Experimental. It has been played on one device only:** Samsung Galaxy S25 Ultra (SM-S938B, Adreno 830, 2340×1080).
@@ -123,6 +132,15 @@ $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 ```
 
 The first ARM64 build took about 13 minutes on a 16-core machine with 8 parallel jobs.
+
+To build the experimental ARM32 variant, run from `android/`:
+
+```powershell
+.\gradlew --no-daemon -PexperimentalArm32=true :app:assembleRelease
+```
+
+This command produces an unsigned Release unless you configure your own signing key. The default build
+still targets ARM64; the published ARM32 APK uses the same signing key as the ARM64 APK.
 
 ## Still to test
 
