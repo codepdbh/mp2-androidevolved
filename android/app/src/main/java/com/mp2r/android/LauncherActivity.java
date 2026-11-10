@@ -31,6 +31,10 @@ public final class LauncherActivity extends Activity {
     private GameOptions options;
     private TextView dataStatus;
     private Button play;
+    /** Aviso de fallo de la última partida, encima del botón de jugar. */
+    private LinearLayout crashBanner;
+    private TextView crashText;
+    private String crash;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -60,6 +64,20 @@ public final class LauncherActivity extends Activity {
         dataStatus = text("", 13, DIM);
         dataStatus.setPadding(0, dp(10), 0, dp(14));
         left.addView(dataStatus);
+        crashBanner = new LinearLayout(this);
+        crashBanner.setOrientation(LinearLayout.VERTICAL);
+        crashBanner.setPadding(dp(14), dp(10), dp(14), dp(10));
+        crashBanner.setBackground(rounded(0xE0301010));
+        crashBanner.setVisibility(View.GONE);
+        crashText = text("", 13, TEXT);
+        crashBanner.addView(crashText);
+        LinearLayout crashButtons = new LinearLayout(this);
+        crashButtons.addView(smallButton(options.tr("Enviar informe", "Send report", "Enviar relatório"), RED, v -> report()));
+        crashButtons.addView(smallButton(options.tr("Ignorar", "Dismiss", "Ignorar"), 0xFF303030, v -> { crash = null; crashBanner.setVisibility(View.GONE); }));
+        crashBanner.addView(crashButtons);
+        LinearLayout.LayoutParams bannerSize = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bannerSize.setMargins(0, 0, 0, dp(12));
+        left.addView(crashBanner, bannerSize);
         play = new Button(this);
         play.setText(options.tr("JUGAR", "PLAY", "JOGAR"));
         play.setTextColor(Color.WHITE);
@@ -124,6 +142,17 @@ public final class LauncherActivity extends Activity {
         editor.setOnClickListener(v -> { options.save(this); startActivity(new Intent(this, ControlsEditorActivity.class)); });
         panel.addView(editor);
 
+        section(panel, options.tr("Errores", "Errors", "Erros"));
+        panel.addView(text(options.tr(
+            "Guarda el log de la última partida y abre un issue en GitHub con los datos del dispositivo. Revisa el texto antes de enviarlo: el issue es público.",
+            "Saves the last session's log and opens a GitHub issue with the device details. Review the text before sending it: the issue is public.",
+            "Salva o log da última partida e abre uma issue no GitHub com os dados do dispositivo. Revise o texto antes de enviar: a issue é pública."), 12, DIM));
+        Button reportButton = new Button(this);
+        reportButton.setText(options.tr("Reportar un problema en GitHub", "Report a problem on GitHub", "Relatar um problema no GitHub"));
+        reportButton.setAllCaps(false);
+        reportButton.setOnClickListener(v -> report());
+        panel.addView(reportButton);
+
         setContentView(root);
     }
 
@@ -131,6 +160,41 @@ public final class LauncherActivity extends Activity {
         super.onResume();
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         refreshData();
+        // Android anota el cierre del proceso del juego un poco después de volver aquí.
+        checkCrash();
+        for (int delay : new int[] {1000, 3000, 6000}) crashBanner.postDelayed(checkCrash, delay);
+    }
+
+    // El sistema anota el fallo al cerrar su propio diálogo de error, sin pasar por onResume.
+    @Override public void onWindowFocusChanged(boolean focus) {
+        super.onWindowFocusChanged(focus);
+        if (focus) { checkCrash(); crashBanner.postDelayed(checkCrash, 1000); }
+    }
+
+    @Override protected void onStop() { crashBanner.removeCallbacks(checkCrash); super.onStop(); }
+
+    private final Runnable checkCrash = this::checkCrash;
+    private void checkCrash() {
+        String fresh = CrashReports.pendingCrash(this);
+        if (fresh != null) crash = fresh;
+        if (crash != null) {
+            crashText.setText(options.tr("El juego se cerró por un error.\n", "The game closed because of an error.\n", "O jogo fechou por causa de um erro.\n") + crash);
+            crashBanner.setVisibility(View.VISIBLE);
+        }
+    }
+
+    private void report() {
+        try {
+            String where = CrashReports.sendToGitHub(this, options, crash);
+            android.widget.Toast.makeText(this, where != null
+                ? options.tr("Informe guardado en ", "Report saved to ", "Relatório salvo em ") + where + options.tr(" y copiado. Adjúntalo al issue.", " and copied. Attach it to the issue.", " e copiado. Anexe-o à issue.")
+                : options.tr("Informe copiado al portapapeles.", "Report copied to the clipboard.", "Relatório copiado para a área de transferência."), android.widget.Toast.LENGTH_LONG).show();
+            crash = null;
+            crashBanner.setVisibility(View.GONE);
+        } catch (RuntimeException e) {
+            android.util.Log.e("MP2Report", "No se pudo preparar el informe", e);
+            android.widget.Toast.makeText(this, options.tr("No se pudo preparar el informe: ", "Could not prepare the report: ", "Não foi possível preparar o relatório: ") + e.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+        }
     }
 
     private boolean gameHasLanguage() {
@@ -177,6 +241,18 @@ public final class LauncherActivity extends Activity {
         view.setTextSize(size);
         view.setTextColor(color);
         return view;
+    }
+    private Button smallButton(String label, int color, View.OnClickListener click) {
+        Button button = new Button(this);
+        button.setText(label);
+        button.setAllCaps(false);
+        button.setTextColor(Color.WHITE);
+        button.setBackground(rounded(color));
+        button.setOnClickListener(click);
+        LinearLayout.LayoutParams size = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        size.setMargins(0, dp(8), dp(8), 0);
+        button.setLayoutParams(size);
+        return button;
     }
     private GradientDrawable rounded(int color) {
         GradientDrawable shape = new GradientDrawable();

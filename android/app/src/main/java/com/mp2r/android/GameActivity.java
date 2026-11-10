@@ -43,6 +43,7 @@ public final class GameActivity extends NativeActivity {
     @Override protected void onCreate(Bundle state) {
         // Antes de super.onCreate: el hilo nativo arranca el juego con estos valores.
         GameOptions options = GameOptions.load(this);
+        CrashReports.startGameLog(this);
         nativeFlags(options.gameFlags());
         nativeHiddenFiles(options.hiddenLanguageFiles());
         nativeRenderScale(options.renderScale);
