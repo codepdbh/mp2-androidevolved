@@ -8,8 +8,8 @@ android {
         applicationId 'com.mp2r.android'
         minSdk 29
         targetSdk 35
-        versionCode 20
-        versionName experimentalArm32 ? '0.20-pc-arm32-experimental' : '0.20-pc'
+        versionCode 21
+        versionName experimentalArm32 ? '0.21-pc-arm32-experimental' : '0.21-pc'
         ndk { abiFilters experimentalArm32 ? 'armeabi-v7a' : 'arm64-v8a' }
         externalNativeBuild { cmake { arguments '-DANDROID_STL=c++_static'; targets 'mp2_android' } }
     }

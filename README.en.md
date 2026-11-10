@@ -30,15 +30,15 @@ x86 PC game → PCRecomp → C → custom Win32 runtime → Android NDK ARM64 �
 
 ## Download
 
-**[Download the 0.20-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.20-pc/MaxPayne2-AndroidEvolved-0.20-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.20-pc)
+**[Download the 0.21-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.21-pc)
 
-First experimental prerelease, with a signed Release APK. Its signature, version and package alignment
+Release 0.21-pc, with signed ARM64 and ARM32 APKs. The port remains experimental. Its signature, version and package alignment
 were verified; this Release build has not yet been tested on a device. The gameplay results below
 come from earlier development builds.
 
 ### ARM32: fully experimental
 
-[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.20-pc/MaxPayne2-AndroidEvolved-0.20-pc-armeabi-v7a-experimental.apk).
+[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-armeabi-v7a-experimental.apk).
 **It may fail to start or crash while loading. It has not been tested on a device.**
 Requires Android 10 or later, support for `armeabi-v7a` apps and a 32-bit Vulkan driver compatible with Vulkan 1.1.
 Some ARM64 phones cannot run ARM32 apps. The guest address space is limited to 1 GB;
@@ -79,11 +79,17 @@ Technical details are in [docs/PROGRESS.md](docs/PROGRESS.md) and blockers in [d
    ```
    adb push "Max Payne 2 The Fall of Max Payne/." /storage/emulated/0/mp2/
    ```
-2. Download and install the [signed 0.20-pc APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.20-pc/MaxPayne2-AndroidEvolved-0.20-pc-arm64-v8a.apk).
+2. Download and install the [signed 0.21-pc APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-arm64-v8a.apk).
 3. Open the app, grant the file permission and tap **PLAY**.
 
 If Android rejects the update because an installed development APK uses a different signature, preserve your
 data and uninstall that APK before installing the release. The release includes `SHA256SUMS.txt` to verify the download.
+
+## Error reports
+
+Since 0.21-pc, the launcher can prepare error reports from the **Errors** section. On Android 11 or later,
+it can also notify you after an abnormal exit. Reports are saved to `mp2/logs`, copied to the clipboard
+and opened in GitHub Issues for you to review and submit; they are not submitted automatically.
 
 ## Touch controls
 
@@ -186,7 +192,7 @@ still targets ARM64; the published ARM32 APK uses the same signing key as the AR
 - [ ] Portuguese in-game: needs language data this copy does not include. The launcher is translated.
 
 **App and distribution**
-- [x] Publish a signed APK: [0.20-pc experimental prerelease](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.20-pc).
+- [x] Publish a signed APK: [0.21-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.21-pc).
 - [ ] A wizard to copy the game and check its version, with clear error messages.
 - [ ] Game folder picker; the path is currently fixed.
 - [ ] Custom Vulkan drivers, disabled in this build.
