@@ -30,15 +30,17 @@ x86 PC game → PCRecomp → C → custom Win32 runtime → Android NDK ARM64 �
 
 ## Download
 
-**[Download the 0.21-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.21-pc)
+**[Download the 0.22-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc)
 
-Release 0.21-pc, with signed ARM64 and ARM32 APKs. The port remains experimental. Its signature, version and package alignment
+Release 0.22-pc, with signed ARM64 and ARM32 APKs. The port remains experimental. Its signature, version and package alignment
 were verified; this Release build has not yet been tested on a device. The gameplay results below
 come from earlier development builds.
 
+This version fixes the blue screen when reopening the game and routes error reports to the main repository (issue #5).
+
 ### ARM32: fully experimental
 
-[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-armeabi-v7a-experimental.apk).
+[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-armeabi-v7a-experimental.apk).
 **It may fail to start or crash while loading. It has not been tested on a device.**
 Requires Android 10 or later, support for `armeabi-v7a` apps and a 32-bit Vulkan driver compatible with Vulkan 1.1.
 Some ARM64 phones cannot run ARM32 apps. The guest address space is limited to 1 GB;
@@ -71,19 +73,113 @@ Technical details are in [docs/PROGRESS.md](docs/PROGRESS.md) and blockers in [d
 - Your copy of Max Payne 2 for PC, specifically the same version the code was generated from
   (SHA-256 hashes are in [config/pc/modules.json](config/pc/modules.json)).
 - `scripts/MaxPayne2.WidescreenFix.asi` and its `.ini`, same version, for widescreen.
-- About 1.5 GB free on internal storage.
+- Space for your complete installation and the app. The tested copy occupies about 1.7 GB;
+  at least **3 GB of free space** is recommended before copying and installing.
 
-### Installation
+## Install the app and copy your game data
 
-1. Copy the game folder to **Internal storage/`mp2`**, so that `mp2/MaxPayne2.exe` exists:
-   ```
-   adb push "Max Payne 2 The Fall of Max Payne/." /storage/emulated/0/mp2/
-   ```
-2. Download and install the [signed 0.21-pc APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-arm64-v8a.apk).
-3. Open the app, grant the file permission and tap **PLAY**.
+### 1. Prepare your original PC copy
+
+Install your original **Windows copy of Max Payne 2** from your disc or the store where you purchased it.
+Find its installed folder containing `MaxPayne2.exe`, the `.ras` archives and the engine DLLs.
+You need the installed files: an installer, an unextracted ZIP or an ISO alone is not a prepared game folder.
+PS2 and Xbox data cannot be used with this version of the port.
+
+The current recompilation corresponds to the binaries listed in [config/pc/modules.json](config/pc/modules.json).
+Not every edition, update or modified executable is compatible. To compare your executable, run PowerShell
+from your game folder:
+
+```powershell
+Get-FileHash .\MaxPayne2.exe -Algorithm SHA256
+```
+
+The executable used for this release has this SHA-256:
+
+```text
+1e25cafc37174a607b58a38dfac796056f0f38f35d253b0b2d7677f9bd7bd010
+```
+
+Widescreen mode expects the **2016** `scripts/MaxPayne2.WidescreenFix.asi` and its `.ini`.
+The mod's official project is [ThirteenAG/WidescreenFixesPack](https://github.com/ThirteenAG/WidescreenFixesPack/releases/tag/mp2),
+but today's download may differ: compare the compatible build's hash in `config/pc/modules.json`.
+Recent mod packs are not guaranteed to work with this recompilation. If you do not have the compatible fix,
+disable **WidescreenFix** in the launcher; this has aspect-ratio limitations and differs from the tested widescreen setup.
+
+### 2. Copy over USB to internal storage
+
+1. Connect your phone to the PC and select **File transfer** for the USB connection.
+2. Open the phone's internal shared storage and create a folder named **`mp2`** at its root.
+3. Copy **all contents of your installed game folder** into `mp2`, preserving names and subfolders.
+   Include the DLLs, every `.ras` archive from your installation, and the `e2driver`, `movies` and `scripts`
+   folders when present. Copying just the executable is not enough.
+4. Wait for the transfer to finish. `MaxPayne2.exe` must be directly inside `mp2`.
+
+Example layout; retain the other files from your installation too:
+
+```text
+Internal storage/
+└── mp2/
+    ├── MaxPayne2.exe
+    ├── e2mfc.dll
+    ├── ... other game DLLs ...
+    ├── MP2_Init.ras
+    ├── MP2_Data.ras
+    ├── MP2_Levels_A.ras
+    ├── MP2_Levels_B.ras
+    ├── MP2_Levels_C.ras
+    ├── MP2_Music.ras
+    ├── MP2_Sounds.ras
+    ├── MP2_Spanish.ras             ← if your copy includes Spanish
+    ├── e2driver/
+    │   └── e2_d3d8_driver_mfc.dll
+    ├── movies/
+    └── scripts/
+        ├── MaxPayne2.WidescreenFix.asi
+        └── MaxPayne2.WidescreenFix.ini
+```
+
+The exact Android path is **`/storage/emulated/0/mp2/MaxPayne2.exe`**.
+Avoid an extra folder such as `mp2/Max Payne 2 The Fall of Max Payne/MaxPayne2.exe`.
+Use internal shared storage, outside `Android/data` and Downloads. Keep the language files supplied with your copy:
+choosing another language in the launcher does not download its data. Back up an existing `mp2` folder
+with saves or settings before replacing files.
+
+**ADB alternative**, if you already have Platform Tools and USB debugging enabled:
+
+```powershell
+adb shell mkdir -p /storage/emulated/0/mp2
+# Replace this path with your original copy's installed folder.
+adb push "C:/Games/Max Payne 2 The Fall of Max Payne/." /storage/emulated/0/mp2/
+adb shell ls /storage/emulated/0/mp2/MaxPayne2.exe
+```
+
+### 3. Install the APK and start
+
+1. Download the **ARM64 APK** from [release 0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
+   Use ARM32 only if you need that architecture and accept its experimental limitations.
+2. Open the APK on your phone and install it. Android may ask you to allow installation from the browser
+   or file manager you are using.
+3. Open **Max Payne 2: Android Evolved**, tap **PLAY** and grant the requested file access.
+   On Android 11 or later the app uses all-files access to read the `mp2` folder.
+4. Return to the app, check that it finds `Internal storage/mp2`, and tap **PLAY**.
+   Choose a language present in your copy and keep WidescreenFix enabled only with the compatible files.
+
+The launcher's data indicator detects the executable's presence; it does not validate the whole installation's
+integrity or compatibility. The game checks additional files at startup.
 
 If Android rejects the update because an installed development APK uses a different signature, preserve your
 data and uninstall that APK before installing the release. The release includes `SHA256SUMS.txt` to verify the download.
+
+### If it does not start
+
+| Message or problem | What to check |
+|---|---|
+| Cannot find `mp2/MaxPayne2.exe` | Exact path, extra nested folders and file access permission. |
+| A file is missing from `mp2` | Copy the named file again from your complete installation; preserve `e2driver`. |
+| Executable does not match the recompiled code | Compare the version and hashes in `config/pc/modules.json`; another edition may be incompatible. |
+| WidescreenFix error | Check the 2016 version and its `.asi` and `.ini` in `mp2/scripts`, or disable the option to test. |
+| Missing language, audio, video or level | Check that all `.ras` archives and your installation's subfolders finished copying. |
+| Crash or black screen after these checks | Open **Errors** in the launcher and prepare a report containing your device, settings and log. |
 
 ## Error reports
 
@@ -192,7 +288,7 @@ still targets ARM64; the published ARM32 APK uses the same signing key as the AR
 - [ ] Portuguese in-game: needs language data this copy does not include. The launcher is translated.
 
 **App and distribution**
-- [x] Publish a signed APK: [0.21-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.21-pc).
+- [x] Publish a signed APK: [0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
 - [ ] A wizard to copy the game and check its version, with clear error messages.
 - [ ] Game folder picker; the path is currently fixed.
 - [ ] Custom Vulkan drivers, disabled in this build.

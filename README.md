@@ -30,15 +30,17 @@ Juego de PC x86 → PCRecomp → C → runtime Win32 propio → Android NDK ARM6
 
 ## Descarga
 
-**[Descargar APK 0.21-pc para ARM64](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-arm64-v8a.apk)** | [Notas del release y SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.21-pc)
+**[Descargar APK 0.22-pc para ARM64](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-arm64-v8a.apk)** | [Notas del release y SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc)
 
-Release 0.21-pc, con APK firmadas para ARM64 y ARM32. El port sigue siendo experimental. Se verificaron la firma, la versión y la alineación
+Release 0.22-pc, con APK firmadas para ARM64 y ARM32. El port sigue siendo experimental. Se verificaron la firma, la versión y la alineación
 del paquete; esta compilación Release todavía no se ha probado en un dispositivo. Las pruebas de juego
 que se describen abajo corresponden a compilaciones anteriores de desarrollo.
 
+Esta versión corrige la pantalla azul al reabrir el juego y dirige los informes de error al repositorio principal (issue #5).
+
 ### ARM32: totalmente experimental
 
-[Descargar APK experimental de 32 bits](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-armeabi-v7a-experimental.apk).
+[Descargar APK experimental de 32 bits](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-armeabi-v7a-experimental.apk).
 **Puede no arrancar o cerrarse durante la carga. No se ha probado en un dispositivo.**
 Requiere Android 10 o superior, soporte de aplicaciones `armeabi-v7a` y un controlador Vulkan de 32 bits
 compatible con Vulkan 1.1. No todos los teléfonos ARM64 permiten ejecutar aplicaciones ARM32.
@@ -70,19 +72,114 @@ Detalle técnico en [docs/PROGRESS.md](docs/PROGRESS.md) y bloqueos en [docs/BLO
 - Tu copia de Max Payne 2 para PC, en concreto la misma versión con la que se generó el código
   (las huellas SHA-256 están en [config/pc/modules.json](config/pc/modules.json)).
 - `scripts/MaxPayne2.WidescreenFix.asi` y su `.ini`, de la misma versión, para el panorámico.
-- Unos 1,5 GB libres en la memoria interna.
+- Espacio para tu instalación completa y la app. La copia usada en las pruebas ocupa unos 1,7 GB;
+  se recomiendan al menos **3 GB libres** antes de copiar e instalar.
 
-### Instalación
+## Instalar la app y copiar los datos de tu juego
 
-1. Copia la carpeta del juego a **Memoria interna/`mp2`**, de modo que exista `mp2/MaxPayne2.exe`:
-   ```
-   adb push "Max Payne 2 The Fall of Max Payne/." /storage/emulated/0/mp2/
-   ```
-2. Descarga e instala la [APK firmada 0.21-pc](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.21-pc/MaxPayne2-AndroidEvolved-0.21-pc-arm64-v8a.apk).
-3. Abre la app, concede el permiso de archivos y pulsa **JUGAR**.
+### 1. Preparar tu copia original en el PC
+
+Instala tu copia original de **Max Payne 2 para Windows** desde el disco o la tienda donde la compraste.
+Localiza la carpeta instalada que contiene `MaxPayne2.exe`, los archivos `.ras` y las DLL del motor.
+Necesitas los archivos ya instalados: copiar el instalador, un ZIP sin extraer o una ISO no prepara los datos.
+Los datos de PS2 o Xbox no sirven para esta versión del port.
+
+La recompilación actual corresponde a los binarios descritos en [config/pc/modules.json](config/pc/modules.json).
+No todas las ediciones, actualizaciones o ejecutables modificados son compatibles. Puedes comparar tu ejecutable
+en PowerShell, desde la carpeta del juego:
+
+```powershell
+Get-FileHash .\MaxPayne2.exe -Algorithm SHA256
+```
+
+La huella del ejecutable usado para esta release es:
+
+```text
+1e25cafc37174a607b58a38dfac796056f0f38f35d253b0b2d7677f9bd7bd010
+```
+
+Para el modo panorámico, la app espera `scripts/MaxPayne2.WidescreenFix.asi` **de 2016** y su `.ini`.
+El proyecto del mod está en [ThirteenAG/WidescreenFixesPack](https://github.com/ThirteenAG/WidescreenFixesPack/releases/tag/mp2),
+pero su descarga actual puede ser distinta: comprueba la huella de la versión compatible en `config/pc/modules.json`.
+No se garantiza que los paquetes recientes de mods funcionen con este código recompilado.
+Si no tienes el fix compatible, desactiva **WidescreenFix** en el launcher; el modo sin él tiene limitaciones
+de aspecto y no equivale a la configuración panorámica probada.
+
+### 2. Copiar por USB al almacenamiento interno
+
+1. Conecta el celular al PC y elige **Transferencia de archivos** en la conexión USB.
+2. Abre el almacenamiento interno del celular y crea una carpeta llamada **`mp2`** en su raíz.
+3. Copia **todo el contenido de la carpeta instalada del juego** dentro de `mp2`, conservando nombres
+   y subcarpetas. Incluye las DLL, todos los `.ras` de tu instalación y las carpetas `e2driver`, `movies`
+   y `scripts` cuando estén presentes. No copies solo el `.exe`.
+4. Espera a que termine la transferencia. `MaxPayne2.exe` debe quedar directamente dentro de `mp2`.
+
+Ejemplo de estructura esperada; conserva también los demás archivos de tu instalación:
+
+```text
+Memoria interna/
+└── mp2/
+    ├── MaxPayne2.exe
+    ├── e2mfc.dll
+    ├── ... otras DLL del juego ...
+    ├── MP2_Init.ras
+    ├── MP2_Data.ras
+    ├── MP2_Levels_A.ras
+    ├── MP2_Levels_B.ras
+    ├── MP2_Levels_C.ras
+    ├── MP2_Music.ras
+    ├── MP2_Sounds.ras
+    ├── MP2_Spanish.ras             ← si tu copia incluye español
+    ├── e2driver/
+    │   └── e2_d3d8_driver_mfc.dll
+    ├── movies/
+    └── scripts/
+        ├── MaxPayne2.WidescreenFix.asi
+        └── MaxPayne2.WidescreenFix.ini
+```
+
+La ruta Android exacta es **`/storage/emulated/0/mp2/MaxPayne2.exe`**.
+Evita una carpeta extra como `mp2/Max Payne 2 The Fall of Max Payne/MaxPayne2.exe`.
+La carpeta debe estar en la memoria interna compartida, no en `Android/data` ni dentro de Descargas.
+Conserva los archivos de idioma que traiga tu copia: elegir otro idioma en el launcher no descarga sus datos.
+Si ya tienes una carpeta `mp2` con partidas o ajustes, haz una copia de seguridad antes de reemplazar archivos.
+
+**Alternativa con ADB**, si ya tienes Platform Tools y depuración USB habilitada:
+
+```powershell
+adb shell mkdir -p /storage/emulated/0/mp2
+# Sustituye esta ruta por la carpeta instalada de tu copia original.
+adb push "C:/Juegos/Max Payne 2 The Fall of Max Payne/." /storage/emulated/0/mp2/
+adb shell ls /storage/emulated/0/mp2/MaxPayne2.exe
+```
+
+### 3. Instalar la APK y arrancar
+
+1. Descarga la **APK ARM64** desde la [release 0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
+   Usa ARM32 solo si necesitas esa arquitectura y aceptas sus límites experimentales.
+2. Abre la APK en el celular e instálala. Android puede pedir permiso para instalar aplicaciones desde
+   el navegador o administrador de archivos que estés usando.
+3. Abre **Max Payne 2: Android Evolved**, pulsa **JUGAR** y concede el permiso de acceso a archivos que solicite.
+   En Android 11 o superior se usa el permiso de acceso a todos los archivos para leer la carpeta `mp2`.
+4. Vuelve a la app, revisa que encuentre `Memoria interna/mp2` y pulsa **JUGAR**.
+   Selecciona un idioma que exista en tu copia y deja activado WidescreenFix solo si copiaste la versión compatible.
+
+El indicador del launcher detecta la presencia del ejecutable; no verifica por sí solo la integridad
+ni la compatibilidad de toda la instalación. El juego comprueba otros archivos al arrancar.
 
 Si Android rechaza la actualización por una firma distinta a la de una APK de desarrollo, conserva tus datos
 y desinstala esa APK antes de instalar el release. En el release encontrarás `SHA256SUMS.txt` para verificar la descarga.
+
+### Si no arranca
+
+| Mensaje o problema | Qué revisar |
+|---|---|
+| No encuentra `mp2/MaxPayne2.exe` | Ruta exacta, carpeta extra y permiso de archivos. |
+| «Falta en la carpeta mp2…» | Vuelve a copiar el archivo indicado desde tu instalación completa; conserva `e2driver`. |
+| «MaxPayne2.exe no coincide con el código recompilado» | Comprueba la versión y huellas de `config/pc/modules.json`; otra edición puede no ser compatible. |
+| Error de WidescreenFix | Comprueba la versión de 2016, su `.asi` y `.ini` en `mp2/scripts`, o desactiva la opción para probar. |
+| Falta un idioma, audio, vídeo o nivel | Comprueba que terminaron de copiarse todos los `.ras` y las subcarpetas de tu copia. |
+| Cierre o pantalla negra después de estas comprobaciones | Abre **Errores** en el launcher y prepara un informe con el dispositivo, ajustes y log. |
 
 ## Informes de error
 
@@ -192,7 +289,7 @@ predeterminada sigue siendo ARM64; la APK publicada de ARM32 está firmada con l
 - [ ] Portugués dentro del juego: requiere datos de ese idioma, que esta copia no trae. El launcher sí está traducido.
 
 **App y distribución**
-- [x] Publicar APK firmada: [0.21-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.21-pc).
+- [x] Publicar APK firmada: [0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
 - [ ] Asistente para copiar el juego y comprobar que la versión es correcta, con mensajes de error claros.
 - [ ] Selector de carpeta del juego; hoy la ruta es fija.
 - [ ] Controladores Vulkan personalizados, desactivados en esta compilación.
