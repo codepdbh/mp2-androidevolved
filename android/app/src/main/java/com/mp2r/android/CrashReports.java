@@ -34,7 +34,7 @@ import java.util.Locale;
  * issue con un resumen, que la persona revisa y envía con su propia cuenta.
  */
 final class CrashReports {
-    static final String REPOSITORY = "codepdbh/maxpayne2pc-androidevolved";
+    static final String REPOSITORY = "codepdbh/mp2-androidevolved";
     private static final String TAG = "MP2Report";
     private static final String GAME_PROCESS = ":game";
     /** La URL de un issue nuevo no admite cuerpos largos: el log completo va en el archivo. */

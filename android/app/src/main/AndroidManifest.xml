@@ -7,7 +7,7 @@
         android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round"
         android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen">
-        <activity android:name=".LauncherActivity" android:exported="true" android:screenOrientation="sensorLandscape">
+        <activity android:name=".LauncherActivity" android:exported="true" android:launchMode="singleTop" android:screenOrientation="sensorLandscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
@@ -16,7 +16,7 @@
         <activity android:name=".ControlsEditorActivity" android:exported="false" android:screenOrientation="sensorLandscape"/>
         <!-- Proceso propio: el juego recompilado no se puede reiniciar dentro del mismo proceso. -->
         <activity android:name=".GameActivity" android:exported="true" android:process=":game"
-            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|touchscreen|density|uiMode|fontScale|locale|layoutDirection|colorMode|mcc|mnc"
             android:screenOrientation="sensorLandscape">
             <meta-data android:name="android.app.lib_name" android:value="mp2_android"/>
         </activity>

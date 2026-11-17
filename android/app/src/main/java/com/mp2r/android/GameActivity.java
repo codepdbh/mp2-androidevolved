@@ -40,7 +40,23 @@ public final class GameActivity extends NativeActivity {
     private boolean requested;
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
 
+    /**
+     * El juego recompilado solo se puede iniciar una vez por proceso. Si Android crea otra
+     * GameActivity en el mismo proceso (la anterior se destruyó al salir o al recrearse),
+     * el juego ya se detuvo y no puede volver a arrancar: se reinicia el proceso.
+     */
+    private static boolean gameStarted;
+    static final String EXTRA_RELAUNCH = "com.mp2r.android.RELAUNCH_GAME";
+
     @Override protected void onCreate(Bundle state) {
+        if (gameStarted) {
+            android.util.Log.w("NFSC", "GameActivity nueva en un proceso ya usado: se reinicia el proceso del juego");
+            startActivity(new Intent(this, LauncherActivity.class).putExtra(EXTRA_RELAUNCH, true)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP));
+            android.os.Process.killProcess(android.os.Process.myPid());
+            return;
+        }
+        gameStarted = true;
         // Antes de super.onCreate: el hilo nativo arranca el juego con estos valores.
         GameOptions options = GameOptions.load(this);
         CrashReports.startGameLog(this);

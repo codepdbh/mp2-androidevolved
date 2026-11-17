@@ -156,10 +156,24 @@ public final class LauncherActivity extends Activity {
         setContentView(root);
     }
 
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+    }
+
+    /** El proceso del juego se reinició: se vuelve a lanzar cuando el anterior haya terminado. */
+    private void relaunchIfAsked() {
+        Intent intent = getIntent();
+        if (intent == null || !intent.getBooleanExtra(GameActivity.EXTRA_RELAUNCH, false)) return;
+        intent.removeExtra(GameActivity.EXTRA_RELAUNCH);
+        play.postDelayed(() -> { if (play.isEnabled()) startGame(); }, 800);
+    }
+
     @Override protected void onResume() {
         super.onResume();
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         refreshData();
+        relaunchIfAsked();
         // Android anota el cierre del proceso del juego un poco después de volver aquí.
         checkCrash();
         for (int delay : new int[] {1000, 3000, 6000}) crashBanner.postDelayed(checkCrash, delay);
