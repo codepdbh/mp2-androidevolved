@@ -262,7 +262,7 @@ void sleepEx(){
     while(ms){checkGuestProgress();auto chunk=std::min(ms,50u);yieldGuestMachine(chunk);if(ms!=UINT32_MAX)ms-=chunk;}
     ret(0,2);
 }
-void exitProcess() {throw GuestStop("Guest requested ExitProcess("+std::to_string(arg(0))+") from "+hex(g_cur_func));}
+void exitProcess() {processExitCode=arg(0);processExitRequested=true;throw GuestExit(processExitCode);}
 void debugString() {NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Guest: %s",guestString(arg(0)).c_str());ret(0,1);}
 void deleteGdiObject(){lastError=6;ret(0,1);} // No GDI-created objects are registered yet.
 std::map<uint32_t,uint32_t> timerPeriods;

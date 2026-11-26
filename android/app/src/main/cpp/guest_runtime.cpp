@@ -82,6 +82,13 @@ std::string hex(uint32_t va) {
     return out.str();
 }
 struct GuestStop : std::runtime_error { using std::runtime_error::runtime_error; };
+struct GuestExit : std::runtime_error {
+    uint32_t code;
+    explicit GuestExit(uint32_t value) : std::runtime_error("Guest ExitProcess(" + std::to_string(value) + ")"), code(value) {}
+};
+static std::atomic<GuestRuntimeOutcome> runtimeOutcome{GuestRuntimeOutcome::Running};
+static std::atomic<bool> processExitRequested{false};
+static uint32_t processExitCode=0; // protected by the guest machine lease
 struct State {
     uint32_t eax{}, ecx{}, edx{}, esp{}, ebx{}, esi{}, edi{}, ebp{}, fs{}, gs{}, cur{};
     uint32_t flags[4]{}, mxcsr{0x1f80};
@@ -256,7 +263,8 @@ void pollGuestNetwork();
 thread_local bool renderThread=false;
 void checkGuestProgress() {
     checkGuestThreadCancellation();
-    while(guestPaused.load()&&!stopRequested.load())yieldGuestMachine(20);
+    while(guestPaused.load()&&!stopRequested.load()&&!processExitRequested.load())yieldGuestMachine(20);
+    if(processExitRequested.load())throw GuestExit(processExitCode);
     if(stopRequested.load())throw GuestStop("Guest execution cancelled");
     // Imports and lifted back edges can reach this hook many times per frame.
     // Keep cancellation immediate, but amortize full register saves and native
@@ -772,10 +780,12 @@ extern "C" void recomp_dump_trace(const char*) {}
 
 std::string connectGuestRuntime(const char* executable) {
     std::unique_lock<MachineMutex> guard(machine);machineLease=&guard;
-    if (memory) return "Runtime guest ya inicializado";
+    if (memory) { runtimeOutcome=GuestRuntimeOutcome::Failed; return "Runtime guest ya inicializado"; }
+    runtimeOutcome=GuestRuntimeOutcome::Running;
     State original; original.save();
     try {
         stopRequested=false;
+        processExitRequested=false;
         // Interactive Android sessions stop through lifecycle cancellation.
 #ifdef __ANDROID__
         bootDeadline=std::chrono::steady_clock::time_point::max();
@@ -813,17 +823,25 @@ std::string connectGuestRuntime(const char* executable) {
         shutdownD3D8Bridge();
 #endif
         original.load();
+        runtimeOutcome=GuestRuntimeOutcome::Completed;
         return "Entrada guest terminada: "+std::to_string(result);
     } catch (const std::exception& e) {
-        NFS_RUNTIME_LOG(ANDROID_LOG_WARN,"NFSC","Guest integration boundary: %s",e.what());
+        const auto* exit=dynamic_cast<const GuestExit*>(&e);
+        const auto outcome=exit ? (exit->code==0 ? GuestRuntimeOutcome::Completed : GuestRuntimeOutcome::Failed)
+                                : (stopRequested.load() ? GuestRuntimeOutcome::Cancelled : GuestRuntimeOutcome::Failed);
+        if(outcome==GuestRuntimeOutcome::Failed)
+            NFS_RUNTIME_LOG(ANDROID_LOG_ERROR,"NFSC","Guest integration boundary: %s",e.what());
+        else NFS_RUNTIME_LOG(ANDROID_LOG_INFO,"NFSC","Guest finished: %s",e.what());
         joinGuestThreads(guard);machineLease=nullptr;shutdownGuestSound();
 #if defined(__ANDROID__) || defined(NFS_D3D9_BACKEND)
         shutdownD3D8Bridge();
 #endif
         original.load();
+        runtimeOutcome=outcome;
         return std::string("Arranque guest detenido: ")+e.what();
     }
 }
+GuestRuntimeOutcome guestRuntimeOutcome() {return runtimeOutcome.load();}
 void requestGuestRuntimeStop() {stopRequested=true;}
 void setGuestPaused(bool paused) {
     // The AAudio stream keeps pulling from looping voices while the guest is

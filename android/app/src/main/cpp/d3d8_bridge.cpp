@@ -2,6 +2,7 @@
 // frontend D3D8 de DXVK (third_party/dxvk_d3d8), que traduce a D3D9 y este a Vulkan.
 // Adaptado del puente D3D9 de los ports de NFS (d3d9_bridge.cpp).
 #include "d3d8_bridge.h"
+#include "frame_rate.h"
 #include "runtime_log.h"
 #include <d3d8.h>
 #include <android/native_window.h>
@@ -21,6 +22,12 @@ extern "C" IDirect3D8* Direct3DCreate8(UINT sdk);
 extern "C" void dxvkAndroidSetWindow(ANativeWindow* window);
 extern "C" HWND dxvkAndroidGetWindowHandle();
 extern "C" void dxvkAndroidSetRenderSize(uint32_t width, uint32_t height);
+
+static FrameRateCounter frameRate;
+static uint64_t frameClock() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+float d3d8FramesPerSecond() {return frameRate.value(frameClock());}
 
 namespace {
 constexpr uint32_t methodBase = 0x7e000000;
@@ -400,7 +407,9 @@ uint32_t dispatchGuestD3D8(uint32_t token, const uint32_t* args, uint32_t* argum
             *argumentCount = 5;
             auto window = dxvkAndroidGetWindowHandle();
             if (!window || deviceResetPending) return D3DERR_DEVICELOST;
-            return device->Present(static_cast<const RECT*>(pointer(args[1])), static_cast<const RECT*>(pointer(args[2])), window, static_cast<const RGNDATA*>(pointer(args[4])));
+            auto result=device->Present(static_cast<const RECT*>(pointer(args[1])), static_cast<const RECT*>(pointer(args[2])), window, static_cast<const RGNDATA*>(pointer(args[4])));
+            if(SUCCEEDED(result))frameRate.presented(frameClock());
+            return result;
         }
         case 13: *argumentCount = 3; throw std::runtime_error("CreateAdditionalSwapChain no se usa en MP2");
         case 20: case 21: case 22: case 23: case 24: case 25: case 26: case 27: {

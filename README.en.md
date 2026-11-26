@@ -30,17 +30,19 @@ x86 PC game → PCRecomp → C → custom Win32 runtime → Android NDK ARM64 �
 
 ## Download
 
-**[Download the 0.22-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc)
+**[Download the 0.23-pc ARM64 APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.23-pc/MaxPayne2-AndroidEvolved-0.23-pc-arm64-v8a.apk)** | [Release notes and SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.23-pc)
 
-Release 0.22-pc, with signed ARM64 and ARM32 APKs. The port remains experimental. Its signature, version and package alignment
+Release 0.23-pc, with signed ARM64 and ARM32 APKs. The port remains experimental. Its signature, version and package alignment
 were verified; this Release build has not yet been tested on a device. The gameplay results below
 come from earlier development builds.
 
-This version fixes the blue screen when reopening the game and routes error reports to the main repository (issue #5).
+This version adds issue fixes, game-data and WidescreenFix validation, an FPS counter, a light
+preset, HUD adjustments and additional controls. It includes the native ARM32 SIGBUS correction.
+See the [change details and outstanding reports](docs/ISSUES_2026-11-20.md).
 
 ### ARM32: fully experimental
 
-[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-armeabi-v7a-experimental.apk).
+[Download the experimental 32-bit APK](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.23-pc/MaxPayne2-AndroidEvolved-0.23-pc-armeabi-v7a-experimental.apk).
 **It may fail to start or crash while loading. It has not been tested on a device.**
 Requires Android 10 or later, support for `armeabi-v7a` apps and a 32-bit Vulkan driver compatible with Vulkan 1.1.
 Some ARM64 phones cannot run ARM32 apps. The guest address space is limited to 1 GB;
@@ -155,7 +157,7 @@ adb shell ls /storage/emulated/0/mp2/MaxPayne2.exe
 
 ### 3. Install the APK and start
 
-1. Download the **ARM64 APK** from [release 0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
+1. Download the **ARM64 APK** from [release 0.23-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.23-pc).
    Use ARM32 only if you need that architecture and accept its experimental limitations.
 2. Open the APK on your phone and install it. Android may ask you to allow installation from the browser
    or file manager you are using.
@@ -164,8 +166,11 @@ adb shell ls /storage/emulated/0/mp2/MaxPayne2.exe
 4. Return to the app, check that it finds `Internal storage/mp2`, and tap **PLAY**.
    Choose a language present in your copy and keep WidescreenFix enabled only with the compatible files.
 
-The launcher's data indicator detects the executable's presence; it does not validate the whole installation's
-integrity or compatibility. The game checks additional files at startup.
+In the current source, **PLAY** checks essential files and the executable's SHA-256 fingerprint.
+With WidescreenFix enabled, it also checks the compatible `.asi` and its `.ini`. If the fix is missing
+or incompatible, correct the files or choose **Play without the fix**. This does not validate the
+complete contents of `.ras` archives; the game checks other data at startup.
+These checks are included starting with 0.23-pc.
 
 If Android rejects the update because an installed development APK uses a different signature, preserve your
 data and uninstall that APK before installing the release. The release includes `SHA256SUMS.txt` to verify the download.
@@ -200,10 +205,20 @@ Each button sends the key or mouse button the game assigns by default.
 | Sideways dive | Shootdodge (left Shift) |
 | Jump / Reload / Hand | Jump / Reload / Use |
 | Painkillers / Weapons / Crosshair | Painkillers / Next weapon / Sniper zoom |
-| Pause | Esc: menu and skipping cutscenes |
+| Pause | Esc: menu |
+| Melee / Crouch | F / C |
+| F5 / F9 / Enter | Quick save / Quick load / Continue |
+| Skip / continue (during scenes) | Space: continue or skip cinematics that the game allows you to skip |
 
-Buttons appear only during gameplay, except Pause, which is always visible. Outside gameplay a tap counts as a
+Gameplay buttons appear during gameplay. Pause stays visible, and **Skip / continue** appears during scenes.
+[Rockstar support](https://support.rockstargames.com/articles/dotbJvVSSxPjelzzDTZTY/how-can-i-skip-the-cinematics-in-max-payne-2)
+states that previously watched cinematics can be skipped with Space or Use. Outside gameplay a tap counts as a
 click. The **Controls** button lets you move and resize them during play, and the launcher offers the same editor.
+
+Current source adds **Show FPS**, counting game presentations, and a **67% resolution / 30 FPS** light
+preset. It reduces graphics workload without guaranteeing a particular frame rate on every device.
+If **HUD at the edges** hides the health bar, reduce **HUD offset** or turn the option off.
+See the [issue review](docs/ISSUES_2026-11-20.md) for local verification and outstanding device-specific reports.
 
 ## Building from source
 
@@ -288,7 +303,7 @@ still targets ARM64; the published ARM32 APK uses the same signing key as the AR
 - [ ] Portuguese in-game: needs language data this copy does not include. The launcher is translated.
 
 **App and distribution**
-- [x] Publish a signed APK: [0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
+- [x] Publish a signed APK: [0.23-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.23-pc).
 - [ ] A wizard to copy the game and check its version, with clear error messages.
 - [ ] Game folder picker; the path is currently fixed.
 - [ ] Custom Vulkan drivers, disabled in this build.

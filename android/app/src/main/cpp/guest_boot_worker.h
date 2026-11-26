@@ -4,16 +4,19 @@
 #include <mutex>
 #include <string>
 #include <stdexcept>
+#include <atomic>
 
 class GuestBootWorker {
     pthread_t thread_{};
     bool started_=false;
+    std::atomic<bool> finished_{false};
     std::mutex mutex_;
     std::string executable_,status_="Arranque CRT pendiente";
     static void* run(void* context) {
         auto& self=*static_cast<GuestBootWorker*>(context);
         auto result=connectGuestRuntime(self.executable_.c_str());
-        std::lock_guard<std::mutex> guard(self.mutex_);self.status_=result;return nullptr;
+        {std::lock_guard<std::mutex> guard(self.mutex_);self.status_=result;}
+        self.finished_=true;return nullptr;
     }
 public:
     ~GuestBootWorker(){if(started_){requestGuestRuntimeStop();pthread_join(thread_,nullptr);}}
@@ -30,4 +33,5 @@ public:
         started_=true;
     }
     std::string status(){std::lock_guard<std::mutex> guard(mutex_);return status_;}
+    bool finished() const {return finished_.load();}
 };

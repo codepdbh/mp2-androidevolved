@@ -27,6 +27,7 @@ public final class GameActivity extends NativeActivity {
     static native void nativeMouseWheel(int delta);
     static native void nativePointer(float x, float y, int phase);
     static native int nativeScreenMode();
+    static native float nativeFps();
     static native boolean nativeGamepadUsed();
     static native void nativeHudEditing(boolean editing);
     private static native void nativeHiddenFiles(String names);
@@ -37,6 +38,10 @@ public final class GameActivity extends NativeActivity {
 
     private TextView status;
     private PopupWindow statusWindow, hudWindow;
+    private PopupWindow fpsWindow;
+    private TextView fpsText;
+    private boolean showFps;
+    private android.app.AlertDialog failureDialog;
     private boolean requested;
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
 
@@ -59,6 +64,7 @@ public final class GameActivity extends NativeActivity {
         gameStarted = true;
         // Antes de super.onCreate: el hilo nativo arranca el juego con estos valores.
         GameOptions options = GameOptions.load(this);
+        showFps = options.showFps;
         CrashReports.startGameLog(this);
         nativeFlags(options.gameFlags());
         nativeHiddenFiles(options.hiddenLanguageFiles());
@@ -81,6 +87,12 @@ public final class GameActivity extends NativeActivity {
         hudWindow.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
         hudWindow.setClippingEnabled(false);
         hudWindow.setSplitTouchEnabled(true);
+        fpsText = new TextView(this);
+        fpsText.setTextColor(Color.WHITE);
+        fpsText.setBackgroundColor(0x90000000);
+        fpsText.setPadding(12, 4, 12, 4);
+        fpsWindow = new PopupWindow(fpsText, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        fpsWindow.setTouchable(false);
     }
 
     @Override protected void onResume() {
@@ -91,9 +103,12 @@ public final class GameActivity extends NativeActivity {
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName())));
         }
         getWindow().getDecorView().post(this::showOverlays);
+        if (showFps) { handler.removeCallbacks(updateFps); handler.post(updateFps); }
     }
 
     @Override protected void onPause() {
+        handler.removeCallbacks(updateFps);
+        fpsWindow.dismiss();
         statusWindow.dismiss();
         hudWindow.dismiss();
         super.onPause();
@@ -116,11 +131,47 @@ public final class GameActivity extends NativeActivity {
         if (decor.getWindowToken() == null) return;
         if (!hudWindow.isShowing()) hudWindow.showAtLocation(decor, Gravity.TOP | Gravity.START, 0, 0);
         if (statusVisible && !statusWindow.isShowing()) statusWindow.showAtLocation(decor, Gravity.TOP | Gravity.START, 0, 0);
+        if (showFps && !fpsWindow.isShowing()) fpsWindow.showAtLocation(decor, Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, 0);
+    }
+
+    private final Runnable updateFps = new Runnable() {
+        @Override public void run() {
+            if (isFinishing() || isDestroyed()) return;
+            fpsText.setText(String.format(java.util.Locale.ROOT, "%.1f FPS", nativeFps()));
+            fpsWindow.update();
+            handler.postDelayed(this, 500);
+        }
+    };
+
+    /** Called after the guest has released its audio and graphics resources. */
+    public void finishGame() {
+        runOnUiThread(this::finishAndRemoveTask);
+    }
+
+    /** Native boot failures remain visible and are included even when logcat is empty. */
+    public void setFailure(String message) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            handler.removeCallbacks(hideStatus);
+            status.setText(message);
+            statusVisible = true;
+            CrashReports.recordFailure(this, message);
+            showOverlays();
+            statusWindow.update();
+            if (failureDialog == null) {
+                GameOptions options = GameOptions.load(this);
+                failureDialog = new android.app.AlertDialog.Builder(this).setTitle("Max Payne 2")
+                    .setMessage(message).setCancelable(false)
+                    .setPositiveButton(options.tr("Volver al inicio", "Back to launcher", "Voltar ao in\u00edcio"), (dialog, which) -> finish())
+                    .show();
+            }
+        });
     }
 
     /** Lo llama el hilo nativo con el estado de arranque. */
     public void setStatus(String message) {
         runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
             status.setText(message);
             statusVisible = true;
             android.util.Log.i("NFSC", "Estado: " + message);
@@ -132,4 +183,13 @@ public final class GameActivity extends NativeActivity {
     }
     private boolean statusVisible;
     private final Runnable hideStatus = () -> { statusVisible = false; statusWindow.dismiss(); };
+
+    @Override protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        if (failureDialog != null) failureDialog.dismiss();
+        if (statusWindow != null) statusWindow.dismiss();
+        if (hudWindow != null) hudWindow.dismiss();
+        if (fpsWindow != null) fpsWindow.dismiss();
+        super.onDestroy();
+    }
 }

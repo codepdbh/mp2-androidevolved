@@ -7,15 +7,16 @@ import android.util.Log;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.util.Locale;
 
 /** Ajustes del launcher, guardados entre sesiones y aplicados antes de arrancar el juego. */
 final class GameOptions {
     int renderScale = 100;
     int frameLimit = 60;
+    boolean showFps = false;
     boolean widescreen = true;
     float fieldOfView = 1.0f;
     boolean widescreenHud = true;
+    int widescreenHudOffset = 100;
     int cutsceneBorders = 2;
     boolean comicsFullscreen = true;
     boolean skipIntro = true;
@@ -34,9 +35,11 @@ final class GameOptions {
         GameOptions o = new GameOptions();
         o.renderScale = p.getInt("escala", o.renderScale);
         o.frameLimit = p.getInt("fps", o.frameLimit);
+        o.showFps = p.getBoolean("mostrarFps", o.showFps);
         o.widescreen = p.getBoolean("panoramico", o.widescreen);
         o.fieldOfView = p.getFloat("fov", o.fieldOfView);
         o.widescreenHud = p.getBoolean("hudPanoramico", o.widescreenHud);
+        o.widescreenHudOffset = Math.max(0, Math.min(100, p.getInt("hudOffset", o.widescreenHudOffset)));
         o.cutsceneBorders = p.getInt("bordes", o.cutsceneBorders);
         o.comicsFullscreen = p.getBoolean("comics", o.comicsFullscreen);
         o.skipIntro = p.getBoolean("saltarIntro", o.skipIntro);
@@ -50,6 +53,7 @@ final class GameOptions {
     void save(Context context) {
         preferences(context).edit()
             .putInt("escala", renderScale).putInt("fps", frameLimit).putBoolean("panoramico", widescreen)
+            .putBoolean("mostrarFps", showFps).putInt("hudOffset", widescreenHudOffset)
             .putFloat("fov", fieldOfView).putBoolean("hudPanoramico", widescreenHud).putInt("bordes", cutsceneBorders)
             .putBoolean("comics", comicsFullscreen).putBoolean("saltarIntro", skipIntro).putBoolean("cargaRapida", fastLoad)
             .putFloat("sensibilidad", lookSensitivity).putInt("opacidad", hudOpacity).putString("idioma", language).apply();
@@ -79,20 +83,15 @@ final class GameOptions {
 
     /** Escribe en el .ini del WidescreenFix de la carpeta del juego solo los valores del launcher. */
     void applyWidescreenIni() {
+        if (!widescreen) return;
         File ini = new File(Environment.getExternalStorageDirectory(), "mp2/scripts/MaxPayne2.WidescreenFix.ini");
         try {
             String text = new String(Files.readAllBytes(ini.toPath()), StandardCharsets.ISO_8859_1);
-            text = setValue(text, "FOVFactor", String.format(Locale.ROOT, "%.2f", fieldOfView));
-            text = setValue(text, "WidescreenHud", widescreenHud ? "1" : "0");
-            text = setValue(text, "CutsceneBorders", Integer.toString(cutsceneBorders));
-            text = setValue(text, "ComicsMode", comicsFullscreen ? "1" : "0");
+            text = WidescreenConfig.update(text, fieldOfView, widescreenHud, widescreenHudOffset, cutsceneBorders, comicsFullscreen);
             Files.write(ini.toPath(), text.getBytes(StandardCharsets.ISO_8859_1));
         } catch (Exception error) {
             Log.w("NFSC", "No se pudo escribir el .ini del WidescreenFix: " + error);
         }
     }
 
-    private static String setValue(String text, String key, String value) {
-        return text.replaceFirst("(?m)^(\\s*" + key + "\\s*=\\s*)[^\\s/;]*", "$1" + value);
-    }
 }

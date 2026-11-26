@@ -31,18 +31,26 @@ final class GameHudView extends View {
     private static final class Button {
         final String id; final Bitmap icon; final float x, y, defaultSize; final int key, mouse, wheel; boolean down; final RectF rect = new RectF();
         float centerX, centerY, size;  // Fracción del ancho, del alto y tamaño en fracción del alto.
+        /** Botones sin icono del proyecto: se dibujan como círculo con texto (no se crean imágenes nuevas). */
+        String label, caption;
         Button(String id, Bitmap icon, float x, float y, float size, int key, int mouse, int wheel) {
             this.id = id; this.icon = icon; this.x = x; this.y = y; this.defaultSize = size; this.key = key; this.mouse = mouse; this.wheel = wheel;
         }
+        Button text(String label, String caption) { this.label = label; this.caption = caption; return this; }
     }
     private static final int ROLE_NONE = 0, ROLE_STICK = 1, ROLE_LOOK = 2, ROLE_BUTTON = 3, ROLE_MENU = 4;
     private static final class Touch { int role; float lastX, lastY; Button button; }
 
     private final List<Button> buttons = new ArrayList<>();
-    private final Button pause;
+    private final Button pause, skip, quickSave, quickLoad, enter;
+    /** Fuera del gameplay (cinemáticas, muerte): además de Pausa, saltar, Enter y carga rápida. */
+    private Button[] outsideGameplay() { return new Button[] {skip, enter, quickLoad}; }
+    private void releaseOutsideGameplay() { for (Button b : outsideGameplay()) if (b.down) press(b, false); }
     private final SparseArray<Touch> touches = new SparseArray<>();
+    private final Paint buttonPaint = new Paint(Paint.ANTI_ALIAS_FLAG), labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint iconPaint = new Paint(Paint.FILTER_BITMAP_FLAG), stickPaint = new Paint(Paint.ANTI_ALIAS_FLAG), textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private boolean menuMode = true;
+    private int screenMode = 1;
     private float stickCenterX, stickCenterY, stickX, stickY, stickRadius;
     private boolean stickActive, forward, back, left, right;
 
@@ -76,6 +84,7 @@ final class GameHudView extends View {
     private boolean gamepadConnected, hasGamepadInput;
     private void releaseAll() {
         for (Button b : buttons) if (b.down) press(b, false);
+        if (skip.down) press(skip, false);
         updateStick(stickCenterX, stickCenterY);
         touches.clear();
     }
@@ -84,7 +93,9 @@ final class GameHudView extends View {
     private final Runnable pollMode = new Runnable() {
         @Override public void run() {
             if (!editing) {
-                boolean menu = GameActivity.nativeScreenMode() != 2;
+                int mode = GameActivity.nativeScreenMode();
+                if (mode != screenMode) { releaseOutsideGameplay(); screenMode = mode; invalidate(); }
+                boolean menu = mode != 2;
                 if (menu != menuMode) { setMenuMode(menu); invalidate(); }
                 // El mando se usó: fuera los botones táctiles hasta que se vuelva a tocar la pantalla.
                 if (GameActivity.nativeGamepadUsed() && gamepadConnected && !gamepadActive) {
@@ -104,6 +115,7 @@ final class GameHudView extends View {
     }
     @Override protected void onDetachedFromWindow() {
         removeCallbacks(pollMode);
+        releaseAll();
         if (inputManager != null) inputManager.unregisterInputDeviceListener(deviceListener);
         super.onDetachedFromWindow();
     }
@@ -118,6 +130,7 @@ final class GameHudView extends View {
         glowPaint.setStyle(Paint.Style.FILL);
         textPaint.setColor(0xFFFFFFFF);
         textPaint.setTextAlign(Paint.Align.CENTER);
+        labelPaint.setTextAlign(Paint.Align.CENTER);
         // Posición en fracción del alto desde abajo a la derecha, y tamaño en fracción del alto.
         buttons.add(new Button("fire", icon(R.drawable.hud_fire), 0.20f, 0.24f, 0.26f, 0, 0, 0));
         aim = new Button("aim", icon(R.drawable.hud_aim), 0.48f, 0.15f, 0.17f, 0x10, -1, 0);                  // SNIPERZOOM: Q + puntería fina
@@ -131,6 +144,21 @@ final class GameHudView extends View {
         buttons.add(new Button("weapons", icon(R.drawable.hud_weapons), 0.92f, 0.14f, 0.15f, 0x1A, -1, 0));      // NEXT: [ (la rueda no cambiaba de arma)
         pause = new Button("pause", icon(R.drawable.hud_pause), 0.10f, 0.90f, 0.12f, 0x01, -1, 0);             // Esc
         buttons.add(pause);
+        skip = new Button("skip", icon(R.drawable.hud_jump), 0.28f, 0.90f, 0.12f, 0x39, -1, 0);
+        // Acciones sin icono propio: texto dentro de un círculo.
+        buttons.add(new Button("melee", null, 0.92f, 0.36f, 0.13f, 0x21, -1, 0)                              // ATTACK: F
+            .text(options.tr("Golpe", "Melee", "Golpe"), "F"));
+        buttons.add(new Button("crouch", null, 0.92f, 0.56f, 0.13f, 0x2E, -1, 0)                             // CROUCH: C
+            .text(options.tr("Agachar", "Crouch", "Agachar"), "C"));
+        quickSave = new Button("quicksave", null, 0.80f, 0.90f, 0.11f, 0x3F, -1, 0)                         // Guardado rápido: F5
+            .text("F5", options.tr("Guardar", "Save", "Salvar"));
+        buttons.add(quickSave);
+        quickLoad = new Button("quickload", null, 0.94f, 0.90f, 0.11f, 0x43, -1, 0)                         // Carga rápida: F9
+            .text("F9", options.tr("Cargar", "Load", "Carregar"));
+        buttons.add(quickLoad);
+        enter = new Button("enter", null, 1.08f, 0.90f, 0.11f, 0x1C, -1, 0)                                 // Enter: continuar tras morir, saltar
+            .text("Enter", options.tr("Continuar", "Continue", "Continuar"));
+        buttons.add(enter);
         stick = new Button("stick", null, 0, 0, 0.32f, 0, -1, 0);
     }
 
@@ -184,6 +212,7 @@ final class GameHudView extends View {
     private List<Button> allControls() {
         List<Button> all = new ArrayList<>(buttons);
         all.add(stick);
+        all.add(skip);
         return all;
     }
     private void layoutControls(int w, int h) {
@@ -272,8 +301,16 @@ final class GameHudView extends View {
 
     @Override protected void onDraw(Canvas canvas) {
         if (gamepadActive && !editing) return;  // Con mando no se dibuja nada.
-        // Fuera del gameplay solo queda Pausa (Esc): es lo que salta cinemáticas y novela gráfica.
-        if (menuMode && !editing) { draw(canvas, pause); return; }
+        // Esc abre el menú; Espacio permite continuar o saltar una cinemática ya vista.
+        if (menuMode && !editing) {
+            draw(canvas, pause);
+            if (screenMode == 0) {
+                for (Button b : outsideGameplay()) draw(canvas, b);
+                textPaint.setTextSize(12 * getResources().getDisplayMetrics().scaledDensity);
+                canvas.drawText(labels.tr("Saltar / continuar", "Skip / continue", "Pular / continuar"), skip.rect.centerX(), skip.rect.bottom + textPaint.getTextSize(), textPaint);
+            }
+            return;
+        }
         stickPaint.setStyle(Paint.Style.STROKE);
         stickPaint.setStrokeWidth(4);
         stickPaint.setAlpha(110);
@@ -282,6 +319,7 @@ final class GameHudView extends View {
         stickPaint.setAlpha(stickActive ? 150 : 80);
         canvas.drawCircle(stickX, stickY, stickRadius * 0.42f, stickPaint);
         for (Button b : buttons) draw(canvas, b);
+        if (editing) draw(canvas, skip);
         if (editing && selected != null) {
             stickPaint.setStyle(Paint.Style.STROKE);
             stickPaint.setStrokeWidth(5);
@@ -301,6 +339,7 @@ final class GameHudView extends View {
     }
 
     private void draw(Canvas canvas, Button b) {
+        if (b.icon == null) { drawText(canvas, b); return; }
         if (!b.down) {
             iconPaint.setAlpha(idleAlpha);
             iconPaint.setColorFilter(null);
@@ -318,6 +357,43 @@ final class GameHudView extends View {
         iconPaint.setColorFilter(pressedTint);
         canvas.drawBitmap(b.icon, null, rect, iconPaint);
         iconPaint.setColorFilter(null);
+    }
+
+    /** Círculo oscuro con borde y texto; al pulsarlo, el mismo halo y el tono ámbar que los iconos. */
+    private void drawText(Canvas canvas, Button b) {
+        float cx = b.rect.centerX(), cy = b.rect.centerY(), radius = b.rect.width() / 2;
+        if (b.down) {
+            glowPaint.setShader(new android.graphics.RadialGradient(cx, cy, radius * 1.25f, 0x99FFC04D, 0x00FFC04D, android.graphics.Shader.TileMode.CLAMP));
+            canvas.drawCircle(cx, cy, radius * 1.25f, glowPaint);
+        }
+        int alpha = b.down ? 255 : idleAlpha;
+        float scale = b.down ? 1.08f : 1f;
+        buttonPaint.setStyle(Paint.Style.FILL);
+        buttonPaint.setColor(0xFF141414);
+        buttonPaint.setAlpha(alpha * 3 / 4);
+        canvas.drawCircle(cx, cy, radius * scale, buttonPaint);
+        buttonPaint.setStyle(Paint.Style.STROKE);
+        buttonPaint.setStrokeWidth(Math.max(2f, radius * 0.07f));
+        buttonPaint.setColor(b.down ? 0xFFFFD27A : 0xFFE8E8E8);
+        buttonPaint.setAlpha(alpha);
+        canvas.drawCircle(cx, cy, radius * scale * 0.92f, buttonPaint);
+        labelPaint.setColor(b.down ? 0xFFFFD27A : 0xFFFFFFFF);
+        labelPaint.setAlpha(alpha);
+        labelPaint.setFakeBoldText(true);
+        float main = radius * (b.label.length() > 4 ? 0.42f : 0.62f);
+        labelPaint.setTextSize(main);
+        // El texto largo se ajusta al diámetro.
+        float width = labelPaint.measureText(b.label), room = radius * 1.6f;
+        if (width > room) { main *= room / width; labelPaint.setTextSize(main); }
+        float small = radius * 0.30f;
+        if (b.caption != null) {
+            canvas.drawText(b.label, cx, cy + main * 0.15f, labelPaint);
+            labelPaint.setFakeBoldText(false);
+            labelPaint.setTextSize(small);
+            canvas.drawText(b.caption, cx, cy + main * 0.15f + small * 1.25f, labelPaint);
+        } else {
+            canvas.drawText(b.label, cx, cy + main * 0.35f, labelPaint);
+        }
     }
 
     @Override public boolean onTouchEvent(MotionEvent event) {
@@ -344,7 +420,11 @@ final class GameHudView extends View {
     }
 
     private Button buttonAt(float x, float y) {
-        if (menuMode) return pause.rect.contains(x, y) ? pause : null;
+        if (menuMode) {
+            if (pause.rect.contains(x, y)) return pause;
+            if (screenMode == 0) for (Button b : outsideGameplay()) if (b.rect.contains(x, y)) return b;
+            return null;
+        }
         for (Button b : buttons) if (b.rect.contains(x, y)) return b;
         return null;
     }
@@ -387,6 +467,7 @@ final class GameHudView extends View {
     }
 
     private void setMenuMode(boolean menu) {
+        releaseOutsideGameplay();
         menuMode = menu;
         if (menu) {
             updateStick(stickCenterX, stickCenterY);

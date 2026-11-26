@@ -4,6 +4,8 @@
 // Maps the owner's PE data, binds imports, tests lifted code and attempts CRT
 // entry until the first unsupported host service. Returns an honest status.
 std::string connectGuestRuntime(const char* executable);
+enum class GuestRuntimeOutcome { Running, Completed, Cancelled, Failed };
+GuestRuntimeOutcome guestRuntimeOutcome();
 void requestGuestRuntimeStop();
 void setGuestPaused(bool paused);
 void setGuestDisplaySize(unsigned width,unsigned height);

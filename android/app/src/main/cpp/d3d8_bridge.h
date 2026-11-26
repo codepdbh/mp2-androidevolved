@@ -7,6 +7,7 @@ void setD3D8HostWindow(ANativeWindow* window);
 void setD3D8RenderSize(unsigned width, unsigned height);
 void setD3D8Compatibility(unsigned backBuffers);
 bool d3d8RequestsSurface();
+float d3d8FramesPerSecond();
 void acknowledgeD3D8Surface(bool available);
 uint32_t createGuestD3D8(uint32_t sdk);
 uint32_t dispatchGuestD3D8(uint32_t token, const uint32_t* args, uint32_t* argumentCount);

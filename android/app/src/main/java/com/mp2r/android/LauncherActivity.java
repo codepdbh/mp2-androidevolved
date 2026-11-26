@@ -114,6 +114,14 @@ public final class LauncherActivity extends Activity {
         if (!gameHasLanguage()) panel.addView(text(options.tr("", "This installation has no English data: the game may show its base text.", "Esta instalação não traz português: o jogo mostrará o idioma base."), 12, DIM));
 
         section(panel, options.tr("Rendimiento", "Performance", "Desempenho"));
+        toggle(panel, options.tr("Mostrar FPS", "Show FPS", "Mostrar FPS"), options.tr("Mide las presentaciones reales del juego, no el límite elegido.", "Measures actual game presentations, not the selected cap.", "Mede as apresentações reais do jogo, não o limite selecionado."), options.showFps, on -> options.showFps = on);
+        Button light = new Button(this);
+        light.setText(options.tr("Perfil ligero: 67 % y 30 FPS", "Light profile: 67% and 30 FPS", "Perfil leve: 67% e 30 FPS"));
+        light.setAllCaps(false);
+        light.setOnClickListener(v -> { options.renderScale = 67; options.frameLimit = 30; options.fastLoad = false; options.save(this); recreate(); });
+        panel.addView(light);
+        if (!android.os.Process.is64Bit() && Build.SUPPORTED_64_BIT_ABIS.length > 0)
+            panel.addView(text(options.tr("Usas la APK ARM32 experimental en un dispositivo compatible con ARM64. Prueba la APK ARM64 para evitar el límite de memoria de 32 bits.", "You are running experimental ARM32 on an ARM64-capable device. Try the ARM64 APK to avoid the 32-bit memory limit.", "Você usa o ARM32 experimental em um dispositivo ARM64. Experimente o APK ARM64 para evitar o limite de memória de 32 bits."), 12, DIM));
         slider(panel, options.tr("Resolución", "Resolution", "Resolução"), new String[] {"50 %", "67 %", "75 %", "85 %", options.tr("100 % (nativa)", "100 % (native)", "100 % (nativa)")}, indexOf(new int[] {50, 67, 75, 85, 100}, options.renderScale),
             i -> options.renderScale = new int[] {50, 67, 75, 85, 100}[i]);
         slider(panel, options.tr("Límite de FPS", "FPS limit", "Limite de FPS"), new String[] {"30", "60", "90", "120", options.tr("Sin límite", "Unlimited", "Sem limite")}, indexOf(new int[] {30, 60, 90, 120, 0}, options.frameLimit),
@@ -126,6 +134,7 @@ public final class LauncherActivity extends Activity {
         slider(panel, options.tr("Campo de visión", "Field of view", "Campo de visão"), percentLabels(80, 140, 5), Math.round((options.fieldOfView - 0.8f) / 0.05f),
             i -> options.fieldOfView = 0.8f + i * 0.05f);
         toggle(panel, options.tr("HUD en los bordes", "HUD at the edges", "HUD nas bordas"), options.tr("Lleva salud y munición a las esquinas de la pantalla.", "Moves health and ammo to the screen corners.", "Leva saúde e munição aos cantos da tela."), options.widescreenHud, on -> options.widescreenHud = on);
+        slider(panel, options.tr("Desplazamiento del HUD (reduce si se recorta)", "HUD offset (reduce if clipped)", "Deslocamento do HUD (reduza se cortar)"), percentLabels(0, 100, 10), Math.round(options.widescreenHudOffset / 10f), i -> options.widescreenHudOffset = i * 10);
         toggle(panel, options.tr("Novela gráfica a pantalla completa", "Full-screen graphic novel", "Graphic novel em tela cheia"), null, options.comicsFullscreen, on -> options.comicsFullscreen = on);
         slider(panel, options.tr("Bandas en cinemáticas", "Cutscene bars", "Barras nas cenas"), new String[] {options.tr("Originales", "Original", "Originais"), options.tr("Sin bandas", "None", "Sem barras"), options.tr("Según la pantalla", "Match the screen", "Conforme a tela")}, options.cutsceneBorders,
             i -> options.cutsceneBorders = i);
@@ -219,19 +228,52 @@ public final class LauncherActivity extends Activity {
 
     private boolean hasPermission() { return Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager(); }
 
+    private boolean checkingData;
     private void refreshData() {
         if (!hasPermission()) { dataStatus.setText(options.tr("Falta el permiso de archivos: pulsa JUGAR para concederlo.", "File permission missing: press PLAY to grant it.", "Falta a permissão de arquivos: toque em JOGAR para conceder.")); return; }
         File exe = new File(Environment.getExternalStorageDirectory(), "mp2/MaxPayne2.exe");
         dataStatus.setText(exe.exists() ? options.tr("Datos del juego: Memoria interna/mp2", "Game data: Internal storage/mp2", "Dados do jogo: Armazenamento interno/mp2") : options.tr("No encuentro Memoria interna/mp2/MaxPayne2.exe. Copia ahí tu instalación.", "Internal storage/mp2/MaxPayne2.exe not found. Copy your installation there.", "Não encontrei Armazenamento interno/mp2/MaxPayne2.exe. Copie sua instalação para lá."));
-        play.setEnabled(exe.exists());
+        play.setEnabled(exe.exists() && !checkingData);
     }
 
     private void startGame() {
+        if (checkingData) return;
         if (!hasPermission()) {
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName())));
             return;
         }
         options.save(this);
+        play.setEnabled(false);
+        dataStatus.setText(options.tr("Comprobando datos y WidescreenFix…", "Checking game data and WidescreenFix…", "Verificando dados e WidescreenFix…"));
+        checkingData = true;
+        final boolean widescreen = options.widescreen;
+        new Thread(() -> {
+            GameDataCheck.Failure failure;
+            try { failure = GameDataCheck.inspect(new File(Environment.getExternalStorageDirectory(), "mp2"), widescreen); }
+            catch (Exception error) { failure = new GameDataCheck.Failure(GameDataCheck.Kind.UNREADABLE, error.toString()); }
+            final GameDataCheck.Failure result = failure;
+            runOnUiThread(() -> {
+                checkingData = false;
+                if (isFinishing() || isDestroyed()) return;
+                refreshData();
+                if (result == null) { launchGame(); return; }
+                String explanation = result.canDisableWidescreen()
+                    ? options.tr("Falta el WidescreenFix compatible de 2016, su INI, o tienes otra versión. Corrige los archivos en mp2/scripts o juega sin el fix (con limitaciones de aspecto).", "The compatible 2016 WidescreenFix or its INI is missing, or you have another version. Correct mp2/scripts or play without the fix (with aspect-ratio limitations).", "Falta o WidescreenFix de 2016, seu INI, ou você tem outra versão. Corrija mp2/scripts ou jogue sem o fix (com limitações de proporção).")
+                    : options.tr("La instalación está incompleta, no se puede leer o el ejecutable no coincide con esta recompilación. Revisa los archivos y la guía del README.", "The installation is incomplete, unreadable, or its executable does not match this recompilation. Check the files and the README guide.", "A instalação está incompleta, ilegível, ou o executável não corresponde à recompilação. Confira os arquivos e o README.");
+                String message = explanation + "\n\n" + result;
+                CrashReports.recordFailure(this, message);
+                android.app.AlertDialog.Builder dialog = new android.app.AlertDialog.Builder(this)
+                    .setTitle(options.tr("Revisar datos del juego", "Check game data", "Confira os dados do jogo"))
+                    .setMessage(message).setNegativeButton(options.tr("Cancelar", "Cancel", "Cancelar"), null);
+                if (result.canDisableWidescreen()) dialog.setPositiveButton(options.tr("Jugar sin el fix", "Play without the fix", "Jogar sem o fix"), (d, which) -> {
+                    options.widescreen = false; options.save(this); startGame();
+                });
+                dialog.show();
+            });
+        }, "mp2-data-check").start();
+    }
+
+    private void launchGame() {
         options.applyWidescreenIni();
         startActivity(new Intent(this, GameActivity.class));
     }

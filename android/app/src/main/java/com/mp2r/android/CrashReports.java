@@ -20,7 +20,6 @@ import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -50,10 +49,23 @@ final class CrashReports {
     static File currentLog(Context context) { return new File(logDir(context), "partida.log"); }
     static File previousLog(Context context) { return new File(logDir(context), "partida_anterior.log"); }
 
+    static void recordFailure(Context context, String message) {
+        Log.e(TAG, message);
+        try { Files.write(new File(logDir(context), "runtime_error.txt").toPath(),
+                (new Date() + "\nMP2 failure: " + message + "\n").getBytes(StandardCharsets.UTF_8)); }
+        catch (IOException e) { Log.w(TAG, "Cannot persist runtime failure", e); }
+    }
+
     // ---- Proceso del juego ----
 
     /** Lo llama GameActivity al arrancar: conserva el log anterior y empieza a guardar este. */
     static void startGameLog(Context context) {
+        new File(logDir(context), "runtime_error.txt").delete();
+        try { Files.write(new File(logDir(context), "session.txt").toPath(),
+                (new Date() + " pid=" + Process.myPid() + " process=" + (Process.is64Bit() ? "64-bit" : "32-bit")
+                + " device=" + Build.MANUFACTURER + " " + Build.MODEL + " API=" + Build.VERSION.SDK_INT + "\n")
+                .getBytes(StandardCharsets.UTF_8)); }
+        catch (IOException e) { Log.w(TAG, "Cannot persist session details", e); }
         File current = currentLog(context), previous = previousLog(context);
         if (current.exists()) { previous.delete(); current.renameTo(previous); }
         try {
@@ -146,10 +158,10 @@ final class CrashReports {
         body.append(options.tr("\n## Log completo\n\nAdjunta el archivo ", "\n## Full log\n\nAttach the file ", "\n## Log completo\n\nAnexe o arquivo "))
             .append(where != null ? "`" + where + "`" : "")
             .append(options.tr(" (también está copiado en el portapapeles).\n", " (it is also on the clipboard).\n", " (também está copiado na área de transferência).\n"));
-        String tail = errorLines(log, TAIL_LINES);
-        int room = URL_BODY_LIMIT - body.length() - 40;
+        String tail = ReportExcerpt.select(log, TAIL_LINES);
+        int room = URL_BODY_LIMIT - body.length() - 150;
         if (room > 200) {
-            if (tail.length() > room) tail = tail.substring(tail.length() - room);
+            if (tail.length() > room) tail = tail.substring(0, room);
             body.append("\n<details><summary>").append(options.tr("Últimas líneas", "Last lines", "Últimas linhas"))
                 .append("</summary>\n\n```\n").append(tail).append("\n```\n</details>\n");
         }
@@ -166,6 +178,8 @@ final class CrashReports {
         s.append("- Android: ").append(Build.VERSION.RELEASE).append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
         if (Build.VERSION.SDK_INT >= 31) s.append("- SoC: ").append(Build.SOC_MANUFACTURER).append(' ').append(Build.SOC_MODEL).append('\n');
         s.append("- ABI: ").append(String.join(", ", Build.SUPPORTED_ABIS)).append('\n');
+        // The launcher may be 64-bit while the :game process was ARM32; session.txt records that process.
+        s.append("- FPS overlay=").append(o.showFps).append(", HUD offset=").append(o.widescreenHudOffset).append('\n');
         ActivityManager.MemoryInfo memory = new ActivityManager.MemoryInfo();
         context.getSystemService(ActivityManager.class).getMemoryInfo(memory);
         s.append("- RAM: ").append(memory.totalMem >> 20).append(" MB\n");
@@ -183,11 +197,33 @@ final class CrashReports {
     /** El log de la última partida terminada (o de la actual), más lo que aún quede en el logcat de la app. */
     private static String gameLog(Context context) {
         StringBuilder s = new StringBuilder();
+        for (String name : new String[]{"runtime_error.txt", "session.txt"}) {
+            File details = new File(logDir(context), name);
+            try { if (details.isFile()) s.append(new String(Files.readAllBytes(details.toPath()), StandardCharsets.UTF_8)).append('\n'); }
+            catch (IOException e) { s.append(e).append('\n'); }
+        }
         File current = currentLog(context), previous = previousLog(context);
-        File log = current.exists() ? current : previous;
+        File log = current.length() > 0 ? current : previous;
+        if (log.equals(previous) && previous.exists()) s.append("## Previous session log (current capture is empty)\n");
         if (log.exists()) {
             try { s.append(new String(Files.readAllBytes(log.toPath()), StandardCharsets.UTF_8)); }
             catch (IOException e) { s.append("(").append(e).append(")\n"); }
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                ApplicationExitInfo exit = lastGameExit(context);
+                if (exit != null && isFailure(exit)) {
+                    try (java.io.InputStream trace = exit.getTraceInputStream()) {
+                        if (trace != null) {
+                            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+                            byte[] buffer = new byte[4096];
+                            for (int n; bytes.size() < 65536 && (n = trace.read(buffer, 0, Math.min(buffer.length, 65536 - bytes.size()))) > 0;)
+                                bytes.write(buffer, 0, n);
+                            s.append("\n## Android exit trace\n").append(new String(bytes.toByteArray(), StandardCharsets.UTF_8)).append('\n');
+                        }
+                    }
+                }
+            } catch (IOException | RuntimeException e) { s.append("Android exit trace unavailable: ").append(e).append('\n'); }
         }
         // El volcado del fallo nativo (tombstone) lo escribe el sistema en el logcat de la app.
         s.append("\n## logcat -d\n\n");
@@ -220,42 +256,6 @@ final class CrashReports {
     private static String displayPath(File file) {
         String path = file.getAbsolutePath(), root = Environment.getExternalStorageDirectory().getAbsolutePath();
         return path.startsWith(root) ? "Internal storage" + path.substring(root.length()) : path;
-    }
-
-    /**
-     * Para el cuerpo del issue: los errores y avisos (E, W, F) del final del log, sin los del
-     * propio launcher. Si no hay ninguno, el final del log tal cual.
-     */
-    private static String errorLines(String text, int lines) {
-        String launcher = String.valueOf(Process.myPid()), previous = null;
-        int repeats = 0;
-        ArrayDeque<String> last = new ArrayDeque<>();
-        for (String line : text.split("\n")) {
-            // threadtime: fecha hora pid tid nivel etiqueta: mensaje
-            String[] field = line.trim().split(" +", 6);
-            if (field.length < 6 || field[2].equals(launcher) || field[4].length() != 1) continue;
-            char level = field[4].charAt(0);
-            if (level != 'E' && level != 'W' && level != 'F') continue;
-            // Avisos repetidos en ráfaga (DXVK): una línea y la cuenta.
-            String message = field[5];
-            if (message.equals(previous)) { repeats++; continue; }
-            if (repeats > 0) addLine(last, "    (×" + (repeats + 1) + ")", lines);
-            previous = message; repeats = 0;
-            addLine(last, line, lines);
-        }
-        if (repeats > 0) addLine(last, "    (×" + (repeats + 1) + ")", lines);
-        return last.isEmpty() ? tail(text, lines) : String.join("\n", last);
-    }
-
-    private static void addLine(ArrayDeque<String> last, String line, int lines) {
-        last.addLast(line);
-        if (last.size() > lines) last.removeFirst();
-    }
-
-    private static String tail(String text, int lines) {
-        ArrayDeque<String> last = new ArrayDeque<>();
-        for (String line : text.split("\n")) { last.addLast(line); if (last.size() > lines) last.removeFirst(); }
-        return String.join("\n", last);
     }
 
     static String version(Context context) {

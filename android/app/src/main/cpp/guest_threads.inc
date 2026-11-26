@@ -131,6 +131,8 @@ void* guestThreadEntry(void* context){
             runGuestTimers();
             thread.exitCode=0;
         }else thread.exitCode=callGuest(thread.start,{thread.parameter},0,true);
+    }catch(const GuestExit& exit){
+        thread.exitCode=exit.code;
     }catch(const GuestThreadExit& exit){
         thread.exitCode=exit.code;
     }catch(const GuestStop& error){

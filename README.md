@@ -30,17 +30,19 @@ Juego de PC x86 → PCRecomp → C → runtime Win32 propio → Android NDK ARM6
 
 ## Descarga
 
-**[Descargar APK 0.22-pc para ARM64](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-arm64-v8a.apk)** | [Notas del release y SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc)
+**[Descargar APK 0.23-pc para ARM64](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.23-pc/MaxPayne2-AndroidEvolved-0.23-pc-arm64-v8a.apk)** | [Notas del release y SHA-256](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.23-pc)
 
-Release 0.22-pc, con APK firmadas para ARM64 y ARM32. El port sigue siendo experimental. Se verificaron la firma, la versión y la alineación
+Release 0.23-pc, con APK firmadas para ARM64 y ARM32. El port sigue siendo experimental. Se verificaron la firma, la versión y la alineación
 del paquete; esta compilación Release todavía no se ha probado en un dispositivo. Las pruebas de juego
 que se describen abajo corresponden a compilaciones anteriores de desarrollo.
 
-Esta versión corrige la pantalla azul al reabrir el juego y dirige los informes de error al repositorio principal (issue #5).
+Esta versión incorpora correcciones de los issues, validación de datos y WidescreenFix, contador FPS,
+perfil ligero, ajustes del HUD y controles adicionales. Incluye la corrección nativa del SIGBUS de ARM32.
+Consulta el [detalle de cambios y problemas pendientes](docs/ISSUES_2026-11-20.md).
 
 ### ARM32: totalmente experimental
 
-[Descargar APK experimental de 32 bits](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.22-pc/MaxPayne2-AndroidEvolved-0.22-pc-armeabi-v7a-experimental.apk).
+[Descargar APK experimental de 32 bits](https://github.com/codepdbh/mp2-androidevolved/releases/download/v0.23-pc/MaxPayne2-AndroidEvolved-0.23-pc-armeabi-v7a-experimental.apk).
 **Puede no arrancar o cerrarse durante la carga. No se ha probado en un dispositivo.**
 Requiere Android 10 o superior, soporte de aplicaciones `armeabi-v7a` y un controlador Vulkan de 32 bits
 compatible con Vulkan 1.1. No todos los teléfonos ARM64 permiten ejecutar aplicaciones ARM32.
@@ -155,7 +157,7 @@ adb shell ls /storage/emulated/0/mp2/MaxPayne2.exe
 
 ### 3. Instalar la APK y arrancar
 
-1. Descarga la **APK ARM64** desde la [release 0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
+1. Descarga la **APK ARM64** desde la [release 0.23-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.23-pc).
    Usa ARM32 solo si necesitas esa arquitectura y aceptas sus límites experimentales.
 2. Abre la APK en el celular e instálala. Android puede pedir permiso para instalar aplicaciones desde
    el navegador o administrador de archivos que estés usando.
@@ -164,8 +166,11 @@ adb shell ls /storage/emulated/0/mp2/MaxPayne2.exe
 4. Vuelve a la app, revisa que encuentre `Memoria interna/mp2` y pulsa **JUGAR**.
    Selecciona un idioma que exista en tu copia y deja activado WidescreenFix solo si copiaste la versión compatible.
 
-El indicador del launcher detecta la presencia del ejecutable; no verifica por sí solo la integridad
-ni la compatibilidad de toda la instalación. El juego comprueba otros archivos al arrancar.
+En el código actual, al pulsar **JUGAR** se comprueban archivos esenciales y la huella SHA-256 del
+ejecutable. Con WidescreenFix activado también se comprueban su `.asi` compatible y su `.ini`.
+Si el fix falta o no coincide, puedes corregirlo o elegir **Jugar sin el fix**. Esta revisión no
+verifica el contenido completo de los archivos `.ras`; el juego comprueba otros datos al arrancar.
+Estas comprobaciones están incluidas desde 0.23-pc.
 
 Si Android rechaza la actualización por una firma distinta a la de una APK de desarrollo, conserva tus datos
 y desinstala esa APK antes de instalar el release. En el release encontrarás `SHA256SUMS.txt` para verificar la descarga.
@@ -200,11 +205,22 @@ Cada botón envía la tecla o el botón de ratón que el juego tiene asignado de
 | Salto lateral | Shootdodge (Mayús izquierda) |
 | Salto / Recarga / Mano | Saltar / Recargar / Usar |
 | Analgésicos / Armas / Mira | Analgésicos / Arma siguiente / Zoom de francotirador |
-| Pausa | Esc: menú y saltar cinemáticas |
+| Pausa | Esc: menú |
+| Golpe / Agachar | F / C |
+| F5 / F9 / Enter | Guardado rápido / Carga rápida / Continuar |
+| Saltar / continuar (en escenas) | Espacio: continuar o saltar cinemáticas que el juego permite omitir |
 
-Los botones solo aparecen en gameplay, salvo Pausa, que está siempre visible. Fuera del gameplay un toque
+Los botones de juego solo aparecen en gameplay. Pausa permanece visible y **Saltar / continuar** aparece
+en escenas. Según el [soporte de Rockstar](https://support.rockstargames.com/articles/dotbJvVSSxPjelzzDTZTY/how-can-i-skip-the-cinematics-in-max-payne-2), las cinemáticas ya vistas se pueden omitir con Espacio o Usar.
+Fuera del gameplay un toque
 cuenta como clic. El botón **Controles** permite moverlos y cambiarles el tamaño durante la partida, y también
 se puede hacer desde el launcher.
+
+El código actual incorpora **Mostrar FPS**, que cuenta las presentaciones del juego, y un perfil
+ligero de **67 % de resolución / 30 FPS**. Este perfil reduce la carga gráfica; no garantiza una
+velocidad concreta en todos los dispositivos. Si al activar **HUD en los bordes** desaparece la salud,
+reduce **Desplazamiento del HUD** o desactiva la opción. Consulta el [seguimiento de issues](docs/ISSUES_2026-11-20.md)
+para distinguir correcciones verificadas localmente de problemas pendientes de reproducir en dispositivos.
 
 ## Compilar desde el código
 
@@ -289,7 +305,7 @@ predeterminada sigue siendo ARM64; la APK publicada de ARM32 está firmada con l
 - [ ] Portugués dentro del juego: requiere datos de ese idioma, que esta copia no trae. El launcher sí está traducido.
 
 **App y distribución**
-- [x] Publicar APK firmada: [0.22-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.22-pc).
+- [x] Publicar APK firmada: [0.23-pc](https://github.com/codepdbh/mp2-androidevolved/releases/tag/v0.23-pc).
 - [ ] Asistente para copiar el juego y comprobar que la versión es correcta, con mensajes de error claros.
 - [ ] Selector de carpeta del juego; hoy la ruta es fija.
 - [ ] Controladores Vulkan personalizados, desactivados en esta compilación.

@@ -23,17 +23,31 @@
 #include "pad_mapper.h"
 #include "vulkan_driver.h"
 
-static void showStatus(android_app* app, const char* message) {
+static void showStatus(android_app* app, const char* message, bool failure=false) {
     JNIEnv* env = nullptr;
     if (app->activity->vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
     jclass cls = env->GetObjectClass(app->activity->clazz);
-    jmethodID method = env->GetMethodID(cls, "setStatus", "(Ljava/lang/String;)V");
+    jmethodID method = env->GetMethodID(cls, failure ? "setFailure" : "setStatus", "(Ljava/lang/String;)V");
     if (method) {
         jstring text = env->NewStringUTF(message);
         env->CallVoidMethod(app->activity->clazz, method, text);
         env->DeleteLocalRef(text);
     }
     if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    env->DeleteLocalRef(cls);
+    app->activity->vm->DetachCurrentThread();
+}
+extern "C" JNIEXPORT jfloat JNICALL Java_com_mp2r_android_GameActivity_nativeFps(JNIEnv*,jclass){return d3d8FramesPerSecond();}
+
+static void finishGame(android_app* app) {
+    JNIEnv* env=nullptr;
+    if(app->activity->vm->AttachCurrentThread(&env,nullptr)!=JNI_OK) {ANativeActivity_finish(app->activity);return;}
+    jclass cls=env->GetObjectClass(app->activity->clazz);
+    jmethodID method=env->GetMethodID(cls,"finishGame","()V");
+    if(method)env->CallVoidMethod(app->activity->clazz,method);
+    if(!method || env->ExceptionCheck()) {
+        env->ExceptionClear();ANativeActivity_finish(app->activity);
+    }
     env->DeleteLocalRef(cls);
     app->activity->vm->DetachCurrentThread();
 }
@@ -240,10 +254,10 @@ struct Host {
 static PadMapper pad;
 static void onCommand(android_app* app, int32_t command) {
     auto& h = *static_cast<Host*>(app->userData);
-    if (command == APP_CMD_RESUME) { h.resumed = true; h.failed = false; }
+    if (command == APP_CMD_RESUME) { h.resumed = true; if(!h.guestWorker.finished()) h.failed = false; }
     if (command == APP_CMD_PAUSE) { setGuestPaused(true);pad.releaseAll();clearGuestInput();h.resumed = false; h.renderer.stop();acknowledgeD3D8Surface(false);setD3D8HostWindow(nullptr); }
     if (command == APP_CMD_TERM_WINDOW || command == APP_CMD_WINDOW_RESIZED || command == APP_CMD_INIT_WINDOW) {
-        setGuestPaused(true);h.renderer.stop(); h.failed = false;
+        setGuestPaused(true);h.renderer.stop(); if(!h.guestWorker.finished()) h.failed = false;
         acknowledgeD3D8Surface(false);setD3D8HostWindow(nullptr);
     }
 }
@@ -344,6 +358,12 @@ void android_main(android_app* app) {
         pad.update();
         if (app->destroyRequested) break;
         if (!host.resumed || !app->window || host.failed) continue;
+        if(host.guestWorker.finished()) {
+            host.renderer.stop();host.failed=true;
+            if(guestRuntimeOutcome()==GuestRuntimeOutcome::Failed) showStatus(app,host.guestWorker.status().c_str(),true);
+            else finishGame(app);
+            continue;
+        }
         try {
             setD3D8HostWindow(app->window);
             if(d3d8RequestsSurface()){host.renderer.stop();acknowledgeD3D8Surface(true);}
@@ -376,7 +396,7 @@ void android_main(android_app* app) {
             if (host.renderer.device&&!host.renderer.draw()) host.renderer.stop();
         } catch (const std::exception& e) {
             __android_log_print(ANDROID_LOG_ERROR, "NFSC", "%s", e.what());
-            showStatus(app, e.what());
+            showStatus(app, e.what(), true);
             host.renderer.stop(); host.failed = true;
         }
     }
